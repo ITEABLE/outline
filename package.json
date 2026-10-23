@@ -4,12 +4,13 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/editor.test.mjs && node tests/applenotes.test.mjs && node tests/terminal.test.mjs"
+    "test": "node tests/editor.test.mjs && node tests/applenotes.test.mjs && node tests/terminal.test.mjs && node tests/images.test.mjs"
   },
   "dependencies": {
     "@tiptap/core": "^3.31.3",
     "@tiptap/extension-code-block-lowlight": "^3.31.3",
     "@tiptap/extension-highlight": "^3.31.3",
+    "@tiptap/extension-image": "^3.31.3",
     "@tiptap/extension-list": "^3.31.3",
     "@tiptap/extension-mention": "^3.31.3",
     "@tiptap/extension-text-style": "^3.31.3",

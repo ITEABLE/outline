@@ -1,5 +1,5 @@
 import './styles.css';
-import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, insertTerminal, esc } from './editor.js';
+import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, insertTerminal, pickImages, esc } from './editor.js';
 import { termBridge } from './terminal.js';
 import { migrateV1 } from './migrate.js';
 import { docToNotesHtml, notesHtmlToDoc, notesHash, hashText } from './applenotes.js';
@@ -27,6 +27,7 @@ const ICON = {
   clear: svg('<path d="M3.5 3.5h7M7 3.5V12"/><path d="M10.5 9.5l3 3M13.5 9.5l-3 3"/>'),
   subnote: svg('<path d="M4 2.5h5l3 3v8H4z"/><path d="M8 7.5v4M6 9.5h4"/>'),
   width: svg('<path d="M2 8h12M4.5 5.5L2 8l2.5 2.5M11.5 5.5L14 8l-2.5 2.5"/>'),
+  image: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="6.5" r="1.1"/><path d="M2.5 11.5l3.5-3 2.5 2 2-1.5 3 2.5"/>'),
   terminal: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M4.75 6.25L6.5 8l-1.75 1.75M8 10h3"/>'),
 };
 const HIGHLIGHTS = [['None', ''], ['Yellow', 'rgba(240,198,116,.32)'], ['Green', 'rgba(158,206,106,.28)'], ['Blue', 'rgba(122,162,247,.32)'], ['Pink', 'rgba(247,118,142,.30)'], ['Purple', 'rgba(187,154,247,.30)']];
@@ -778,6 +779,7 @@ function toolbarHTML() {
     <button class="tb-btn" data-cmd="clear" title="Clear formatting">${ICON.clear}</button>
     <span class="tb-sep"></span>
     <button class="tb-btn labeled" data-cmd="codeblock" title="Selection → code block (⌘↵)"><span class="mono">{ }</span><span class="lbl">Code</span></button>
+    <button class="tb-btn labeled" data-cmd="image" title="Add a picture (or paste / drop one)">${ICON.image}<span class="lbl">Picture</span></button>
     ${termBridge ? `<button class="tb-btn labeled" data-cmd="terminal" title="Add a live terminal">${ICON.terminal}<span class="lbl">Terminal</span></button>` : ''}
     <button class="tb-btn labeled" data-cmd="subnote" title="New sub-note inside this note">${ICON.subnote}<span class="lbl">Sub-note</span></button>
     <span class="tb-fill"></span>
@@ -802,6 +804,7 @@ function runCmd(pane, cmd, value, el) {
     case 'clear': c().unsetAllMarks().run(); break;
     case 'codeblock': codeBlockFromSelection(ed); break;
     case 'terminal': insertTerminal(ed); break;
+    case 'image': pickImages(ed); break;
     case 'subnote': promptSubnote(ed, h.noteId); break;
     case 'wide': state.wide = !state.wide; applyWide(); save(); break;
   }
@@ -1046,6 +1049,9 @@ document.addEventListener('keydown', e => {
     activateTab(pane, pane.tabs[(pane.tabs.indexOf(pane.active) + step + n) % n]);
   }
 });
+
+// A file dropped anywhere but the editor would make the browser open it in place of the app.
+for (const t of ['dragover', 'drop']) document.addEventListener(t, e => { if (e.dataTransfer?.types.includes('Files') && !e.defaultPrevented) e.preventDefault(); });
 
 /* ---------- boot ---------- */
 sweep({ atLoad: true });

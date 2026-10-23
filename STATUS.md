@@ -2,11 +2,11 @@
 
 _Last updated: 2026-10-24_
 
-Outline is a personal Mac notes app, built for the owner of this Mac to use instead of Apple Notes. They mostly keep prompts and Terminal commands in it. It's a native Mac app: a small Swift window that hosts a web-based rich-text editor (TipTap). It can send notes to Apple Notes, and from there to the iPhone through iCloud. Notes can also hold live terminals, with a one-click way to start the Claude CLI in them.
+Outline is a personal Mac notes app, built for the owner of this Mac to use instead of Apple Notes. They mostly keep prompts and Terminal commands in it. It's a native Mac app: a small Swift window that hosts a web-based rich-text editor (TipTap). It can send notes to Apple Notes, and from there to the iPhone through iCloud. Notes can also hold pictures (paste, drop, resize) and live terminals, with a one-click way to start the Claude CLI in them.
 
 ## Current state
 
-- **Installed:** `/Applications/Outline.app`, the current version with terminals, installed 2026-10-24.
+- **Installed:** `/Applications/Outline.app`, the current version with pictures and terminals, installed 2026-10-24.
 - **Your notes:** `~/Library/Application Support/Outline/notes.json`. Never test against this file; see "Testing" below.
 - **Features:** everything asked for in this conversation is done. Nothing is known to be broken. See "Known limits" for what the design deliberately doesn't do.
 
@@ -16,7 +16,7 @@ Outline is a personal Mac notes app, built for the owner of this Mac to use inst
 npm install                 # once, on a new machine
 ./build.sh                  # builds dist/ (web) + build/Outline.app
 ./build.sh --install        # same, then replaces /Applications/Outline.app
-npm test                    # editor, Apple Notes and terminal tests in Chrome (needs dist/ built)
+npm test                    # editor, Apple Notes, terminal and picture tests in Chrome (needs dist/ built)
 node build.mjs              # web bundle only (DEV=1 node build.mjs → readable, unminified)
 ```
 
@@ -29,7 +29,7 @@ Requirements: macOS with the Xcode command-line tools (`swiftc`), Node, and Goog
 | Path | What it is |
 |---|---|
 | `src/app.js` | The app: sidebar tree, tabs and side-by-side panes, toolbar, saving, auto-removal of unused notes, Apple Notes menu |
-| `src/editor.js` | The TipTap editor: extensions, code blocks (language picker, auto-detect, ⌘↵), `@` note links, `/` menu, Markdown and code paste, keyboard fixes, inserting terminals |
+| `src/editor.js` | The TipTap editor: extensions, code blocks (language picker, auto-detect, ⌘↵), `@` note links, `/` menu, Markdown and code paste, pictures (paste, drop, picker, resize), keyboard fixes, inserting terminals |
 | `src/terminal.js`, `src/terminal.css` | Terminal views (xterm.js): the note block and the window share one `TermView`; tabs, folder menu, Claude button, the `terminal` node |
 | `src/term-window.js`, `src/term.html` | The terminal window's page (one session, full size, tab shortcuts) |
 | `src/applenotes.js` | Converts Outline ↔ Apple Notes HTML, plus change fingerprints |
@@ -37,11 +37,12 @@ Requirements: macOS with the Xcode command-line tools (`swiftc`), Node, and Goog
 | `src/detect.js` | Guesses a snippet's language (json/python/javascript/bash/sql/plaintext) |
 | `src/styles.css`, `src/index.html` | Look and page shell (dark theme) |
 | `mac/main.swift` | Native shell: window, WKWebView, saving to disk, Apple Notes bridge, confirm/alert boxes, external links, save-on-quit, test switches |
+| `mac/images.swift` | Pictures: saves them as files in `images/` and serves them to the page as `outline-image://img/<hash>.<ext>` |
 | `mac/terminal.swift` | Terminals: real shells on pseudo-terminals, tabs, terminal windows, folders, starting Claude, saving `terminals.json` |
 | `mac/notes.js` | JavaScript-for-Automation script that talks to Apple Notes (run through `osascript`) |
 | `mac/Info.plist`, `mac/AppIcon.icns`, `mac/icon-source.html` | App metadata, icon, and the icon's source design |
 | `build.mjs`, `build.sh` | Build scripts |
-| `tests/editor.test.mjs`, `tests/applenotes.test.mjs`, `tests/terminal.test.mjs` | End-to-end tests; screenshots go to `tests/.output/` (not committed) |
+| `tests/editor.test.mjs`, `tests/applenotes.test.mjs`, `tests/terminal.test.mjs`, `tests/images.test.mjs` | End-to-end tests; screenshots go to `tests/.output/` (not committed) |
 | `dist/`, `build/`, `node_modules/` | Generated. Safe to delete; rebuilt by the commands above |
 
 ## Data and backups
@@ -53,6 +54,8 @@ All in `~/Library/Application Support/Outline/`:
 - `notes.before-v2.20260912-004645.json`: the owner's original notes, from before the big rewrite.
 - `notes.before-import.<time>.json`: made before every "Bring back from Apple Notes".
 - `notes.before-terminals.20261024-014128.json`: the notes just before the terminals version was installed.
+- `notes.before-pictures.20261024-023814.json`: the notes just before the pictures version was installed.
+- `images/`: every picture added to a note, named by a hash of its bytes (the same picture is stored once). Notes store `{ "type": "image", "attrs": { "src": "outline-image://img/….png", "width": 480, "height": … } }`. Nothing deletes these files, so pictures removed from notes stay on disk (and old backups keep working).
 - `terminals.json`: each terminal's tabs (name, folder) and its last 64 KB of output, keyed by the block's session id, plus recently picked folders. Notes only store `{ "type": "terminal", "attrs": { "sid": "…" } }`.
 
 Format v2 (`notes.json`):
@@ -97,6 +100,12 @@ Format v2 (`notes.json`):
    - ⌘\ hides the sidebar; drag its edge to resize it (double-click the edge to reset)
 7. **Apple Notes:** the sidebar's Apple Notes button (and right-click → Send to Apple Notes). See the next section.
 8. **Terminals** (Mac app only): see "Terminals" below.
+9. **Pictures:**
+   - paste a screenshot or copied picture (⌘V), drop picture files onto a note, or use the toolbar's **Picture** button or `/picture` (Mac file picker, several at once)
+   - a Retina screenshot starts at the size it was on screen; it never grows past the note's width
+   - hover a picture to show its handles: drag the left/right edges or bottom corners to resize (the shape is kept); the size is saved
+   - click a picture to select it; Backspace deletes it (pictures can't be dragged to move them: that drag stopped resizing from working in the Mac app)
+   - in a plain browser, pictures are stored inside the note (data URLs)
 
 **Other shortcuts:**
 - Esc jumps between the sidebar and the editor
@@ -145,11 +154,12 @@ Format v2 (`notes.json`):
 | Code block | monospace lines; indentation kept via non-breaking spaces | code block (language re-guessed) |
 | Inline code | monospace | inline code |
 | Quote, divider, `@` link | plain text | plain text |
+| Picture | a "[Picture — open this note in Outline to see it]" line (scripts can't add attachments) | that line, as text (the picture is lost if the note is edited in Apple Notes) |
 | Terminal | a "[Terminal — open this note in Outline to use it]" line | that line, as text (the terminal is lost if the note is edited in Apple Notes) |
 
 ## Testing
 
-**`npm test`** runs three Chrome end-to-end suites against `dist/`:
+**`npm test`** runs four Chrome end-to-end suites against `dist/`:
 
 - **`tests/editor.test.mjs`** covers:
   - v1→v2 migration, run on the owner's real `notes.before-v2` backup if present (read-only; it never writes to it)
@@ -164,6 +174,7 @@ Format v2 (`notes.json`):
   - adding a block (toolbar, `/terminal`), output, keys going to the shell and not the note
   - the default folder, the folder menu (default, Home, recent, Choose…), the Claude button and ⌘J, tabs (new, switch, rename), the window hand-off
   - saving the block, `gc` after a relaunch, removing, the terminal window's shortcuts, the plain-browser placeholder
+- **`tests/images.test.mjs`** covers pasting a screenshot (size, placement, caret after it), resizing by dragging an edge (shape kept, size saved), dropping a file, the Picture button's file picker, `/picture`, reload, and, against a stand-in for the Mac app, that pictures are handed to the app to save instead of stored in the note.
 
 **Real Mac app, safely:** these environment variables make it use a scratch copy and no window.
 
@@ -171,12 +182,12 @@ Format v2 (`notes.json`):
 mkdir -p /tmp/outline-test && cp ~/Library/Application\ Support/Outline/notes.json /tmp/outline-test/
 OUTLINE_STORE_DIR=/tmp/outline-test OUTLINE_HIDDEN=1 OUTLINE_SELFTEST=/tmp/outline-test/result.txt \
   build/Outline.app/Contents/MacOS/Outline
-cat /tmp/outline-test/result.txt   # "ok notes.before-import…json term=ok window=ok folder=…/Claude outline"; app quits by itself
+cat /tmp/outline-test/result.txt   # "ok notes.before-import…json term=ok window=ok folder=…/Claude outline image=ok"; app quits by itself
 ```
 
 - `OUTLINE_STORE_DIR`: use another notes folder.
 - `OUTLINE_HIDDEN`: no window and no Dock icon.
-- `OUTLINE_SELFTEST=<file>`: after load, send one `backup` request through the Apple Notes bridge, run `echo` in a real shell, open and close its window (not shown when hidden), write the results to `<file>`, and quit.
+- `OUTLINE_SELFTEST=<file>`: after load, send one `backup` request through the Apple Notes bridge, run `echo` in a real shell, open and close its window (not shown when hidden), save a picture and load it back through `outline-image://`, write the results to `<file>`, and quit.
 - `OUTLINE_SELFTEST_CLAUDE=1`: the self-test also starts the Claude CLI in the terminal and checks the tab is titled "claude" (sends no message).
 
 **The Apple Notes script by hand.** This creates real notes, so only use a throwaway folder name:
@@ -200,6 +211,7 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
 - **Saving:** it is batched (~0.4s). On quit, Swift calls `window.__flush()` and writes what it returns.
 - **Build target:** the web bundle targets Safari 15 (macOS 12), and the toolbar uses CSS container queries to wrap and shorten in narrow panes.
 - **Apple Notes naming:** Apple Notes takes a note's name from its first line; Outline sends the title first and strips that line when bringing a note back.
+- **Pictures and WKWebView:** `<input type=file>` shows nothing unless the app implements `runOpenPanelWith` (done in `main.swift`), and the input must be in the page or it may never report its files. A file dropped outside the editor would make WKWebView open it in place of the app, so the page swallows such drops and `decidePolicyFor` refuses file URLs outside the app bundle.
 - **No `MainActor.assumeIsolated`:** it crashed the app from a timer on this macOS. `mac/terminal.swift` uses selector timers, `perform(_:afterDelay:)` and `DispatchQueue.main.async { @MainActor in … }`.
 - **Errors in async message handlers vanish:** an Objective-C exception inside one (e.g. a bad URL passed to `loadFileURL`) never replies, and the page waits forever. The self-test gives every request a deadline for that reason.
 - **Shells:** started with `forkpty` + `execve` (argv/env built before the fork). The env drops `CLAUDECODE*`/`OUTLINE_*` and adds `TERM=xterm-256color`, `LANG`, and `~/.local/bin` + Homebrew to `PATH`. Writes to a shell go through a per-tab queue so a program that stops reading can't freeze the window.
@@ -218,7 +230,7 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
 - **Not built yet:**
   - dragging tabs between panes, or dragging notes in the sidebar (use Tab / ⇧Tab)
   - search across notes
-  - images
+  - cropping or captions for pictures; unused picture files are never cleaned up
   - stable code signing, which would stop the permission prompt returning after reinstalls
 - **Old test code:** the old single-file v1 `index.html` was removed; its logic lives on in `src/detect.js` and `src/migrate.js`.
 
@@ -234,11 +246,12 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
   4. Apple Notes send and bring back, a bug sweep, and this file
   5. Terminals in notes: tabs, their own window, and quick short answers from Claude (2026-10-24)
   6. Terminals start in `~/Desktop/Claude outline` with a folder menu; the Claude button starts the real CLI (2026-10-24)
+  7. Pictures: paste, drop, pick and resize (2026-10-24)
 
 ## Test results at handoff
 
-- **`npm test`:** all three suites report ALL PASSED (2026-10-24). The editor suite's "toolbar bold" check still fails now and then under load (the old selection-timing flake); it passed on rerun.
-- **Real app self-test on a copy of the owner's notes:** `term=ok window=ok folder=/Users/apple/Desktop/Claude outline claude=ok` (the Claude CLI started in the terminal). The app quit cleanly, with no shells left running.
-- **Installed:** `/Applications/Outline.app` on 2026-10-24, with a valid code signature. Notes were backed up before the first terminals install (`notes.before-terminals.20261024-014128.json`).
-- **Not seen yet by a person:** the terminal window on screen, the folder picker, and typing into a block in the installed app. The pieces are tested, but only in the hidden test mode.
+- **`npm test`:** all four suites report ALL PASSED (2026-10-24). The editor suite's "toolbar bold" check still fails now and then under load (the old selection-timing flake); it passed on rerun.
+- **Real app self-test on a copy of the owner's notes:** `term=ok window=ok folder=/Users/apple/Desktop/Claude outline image=ok` (a picture saved to `images/` and shown back). The app quit cleanly, with no shells left running.
+- **Installed:** `/Applications/Outline.app` on 2026-10-24, with a valid code signature. Notes were backed up first (`notes.before-pictures.20261024-023814.json`).
+- **Not seen yet by a person:** pasting a real screenshot, the picture picker and the folder picker on screen, and the terminal window. The pieces are tested, but only in Chrome and in the hidden test mode.
 - **Earlier (2026-09-12):** live Apple Notes send, update and fetch worked in a throwaway folder. The first "Send to Apple Notes" from the installed app will show macOS's permission prompt.

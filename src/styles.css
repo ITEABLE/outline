@@ -252,6 +252,29 @@ aside {
 .ProseMirror-selectednode.mention { outline: 2px solid rgba(138, 180, 248, .55); }
 .ProseMirror .ProseMirror-gapcursor::after { border-top-color: var(--accent); }
 
+/* pictures: drag the left/right edges or bottom corners to resize */
+.ProseMirror [data-resize-container][data-node="image"] { margin: .7em 0; -webkit-user-drag: none; }
+.ProseMirror [data-resize-handle] { -webkit-user-drag: none; user-select: none; -webkit-user-select: none; }
+.ProseMirror [data-resize-wrapper] { max-width: 100%; }
+.ProseMirror [data-resize-wrapper] img, .ProseMirror > img {
+  display: block; max-width: 100%; height: auto !important; border-radius: 6px; border: 1px solid var(--line);
+}
+.ProseMirror .ProseMirror-selectednode img, .ProseMirror img.ProseMirror-selectednode { outline: 2px solid rgba(138, 180, 248, .6); outline-offset: 2px; }
+.ProseMirror [data-resize-handle] { z-index: 2; opacity: 0; transition: opacity .12s; }
+.ProseMirror [data-resize-container]:hover [data-resize-handle], .ProseMirror .ProseMirror-selectednode [data-resize-handle] { opacity: 1; }
+.ProseMirror [data-resize-handle="left"], .ProseMirror [data-resize-handle="right"] { width: 12px; cursor: ew-resize; }
+.ProseMirror [data-resize-handle="left"] { left: -6px !important; }
+.ProseMirror [data-resize-handle="right"] { right: -6px !important; }
+.ProseMirror [data-resize-handle="left"]::after, .ProseMirror [data-resize-handle="right"]::after {
+  content: ""; position: absolute; left: 4px; top: 50%; width: 4px; height: 36px; margin-top: -18px;
+  border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+}
+.ProseMirror [data-resize-handle="bottomLeft"], .ProseMirror [data-resize-handle="bottomRight"] {
+  width: 12px; height: 12px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+}
+.ProseMirror [data-resize-handle="bottomLeft"] { left: -5px !important; bottom: -5px !important; cursor: nesw-resize; }
+.ProseMirror [data-resize-handle="bottomRight"] { right: -5px !important; bottom: -5px !important; cursor: nwse-resize; }
+
 /* code blocks */
 .code {
   --lc: #7f8490;

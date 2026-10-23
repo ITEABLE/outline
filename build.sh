@@ -9,7 +9,7 @@ APP=build/Outline.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O -parse-as-library -swift-version 5 -target arm64-apple-macos12.0 mac/main.swift mac/terminal.swift -o "$APP/Contents/MacOS/Outline"
+swiftc -O -parse-as-library -swift-version 5 -target arm64-apple-macos12.0 mac/main.swift mac/terminal.swift mac/images.swift -o "$APP/Contents/MacOS/Outline"
 cp mac/Info.plist "$APP/Contents/Info.plist"
 cp dist/index.html dist/app.js dist/app.css dist/term.html dist/term.js dist/term.css "$APP/Contents/Resources/"
 cp mac/notes.js "$APP/Contents/Resources/notes.js"

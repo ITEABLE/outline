@@ -5,6 +5,7 @@ import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Mention from '@tiptap/extension-mention';
+import Image from '@tiptap/extension-image';
 import { Placeholder } from '@tiptap/extensions';
 import Suggestion from '@tiptap/suggestion';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
@@ -174,6 +175,75 @@ function autoLang(editor) {
   if (changed) { tr.setMeta('addToHistory', false); editor.view.dispatch(tr); }
 }
 
+/* ---------- pictures ---------- */
+// In the Mac app pictures are saved as files beside the notes (mac/images.swift); in a browser they stay inline.
+const imagesBridge = window.webkit?.messageHandlers?.images || null;
+const isImage = f => f && /^image\//.test(f.type);
+
+const readDataUrl = file => new Promise((ok, no) => {
+  const r = new FileReader();
+  r.onload = () => ok(r.result);
+  r.onerror = () => no(r.error);
+  r.readAsDataURL(file);
+});
+const naturalWidth = src => new Promise(ok => {
+  const img = new window.Image();
+  img.onload = () => ok(img.naturalWidth);
+  img.onerror = () => ok(0);
+  img.src = src;
+});
+
+async function storeImage(file) {
+  const dataUrl = await readDataUrl(file);
+  const w = await naturalWidth(dataUrl);
+  const src = imagesBridge
+    ? await imagesBridge.postMessage({ op: 'save', type: file.type, b64: dataUrl.slice(dataUrl.indexOf(',') + 1) })
+    : dataUrl;
+  // a Retina screenshot has twice the pixels it showed on screen; start it at its on-screen size
+  return { src, width: w ? Math.round(w / (window.devicePixelRatio || 1)) : null };
+}
+
+// Adds pictures at the caret (or at `pos`, where they were dropped).
+export async function insertImages(editor, files, pos) {
+  const list = [...files].filter(isImage);
+  if (!list.length) return false;
+  let nodes;
+  try { nodes = (await Promise.all(list.map(storeImage))).map(attrs => ({ type: 'image', attrs })); }
+  catch (e) { alert(e.message || String(e)); return true; }
+  if (editor.isDestroyed) return true;
+  if (typeof pos === 'number') return editor.chain().focus().insertContentAt(pos, nodes).run();
+  leaveEmptyListItem(editor);
+  const { $from } = editor.state.selection;
+  const empty = $from.parent.type.name === 'paragraph' && !$from.parent.content.size && $from.depth === 1;
+  if (!empty) return editor.chain().focus().insertContent(nodes).run();
+  // pictures are one position each, so the line after them starts right past the last one
+  const at = $from.before();
+  editor.chain().focus().insertContentAt({ from: at, to: $from.after() }, nodes).run();
+  if (editor.state.doc.nodeAt(at + nodes.length)?.type.name !== 'paragraph') editor.commands.insertContentAt(at + nodes.length, { type: 'paragraph' });
+  return editor.chain().setTextSelection(at + nodes.length + 1).focus().run();
+}
+
+// Opens the file picker for pictures.
+export function pickImages(editor) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;
+  input.hidden = true;
+  document.body.append(input); // a detached input may never report its files
+  input.onchange = () => { if (input.files.length) insertImages(editor, input.files); input.remove(); };
+  input.addEventListener('cancel', () => input.remove());
+  input.click();
+  return true;
+}
+
+// Not draggable as a whole: in the Mac app a drag on the picture grabbed the mouse before its resize handles could.
+const Picture = Image.extend({ draggable: false }).configure({
+  inline: false,
+  allowBase64: true,
+  resize: { enabled: true, directions: ['left', 'right', 'bottomLeft', 'bottomRight'], minWidth: 60, minHeight: 30, alwaysPreserveAspectRatio: true },
+});
+
 /* ---------- block types (toolbar + slash menu) ---------- */
 export const BLOCKS = [
   { id: 'paragraph', label: 'Text', icon: 'T', keys: 'text plain paragraph' },
@@ -274,6 +344,7 @@ function popup(renderItem) {
 const SLASH = [
   ...BLOCKS,
   { id: 'divider', label: 'Divider', icon: '—', keys: 'hr line separator' },
+  { id: 'image', label: 'Picture', icon: '▣', keys: 'image photo screenshot attach png jpg', hint: 'from a file' },
   { id: 'terminal', label: 'Terminal', icon: '›_', keys: 'shell console command zsh claude', hint: 'a live shell' },
   { id: 'subnote', label: 'Sub-note', icon: '+', keys: 'page child note inside', hint: 'a note inside this one' },
   { id: 'mention', label: 'Link to a note', icon: '@', keys: 'mention reference' },
@@ -296,6 +367,7 @@ function slashCommands(ctx) {
           editor.chain().focus().deleteRange(range).run();
           if (props.id === 'divider') editor.chain().focus().setHorizontalRule().run();
           else if (props.id === 'terminal') insertTerminal(editor);
+          else if (props.id === 'image') pickImages(editor);
           else if (props.id === 'subnote') ctx.promptSubnote?.(editor);
           else if (props.id === 'mention') editor.chain().focus().insertContent('@').run();
           else setBlock(editor, props.id);
@@ -383,6 +455,9 @@ const SmartPaste = Extension.create({
       props: {
         handlePaste(view, event) {
           const dt = event.clipboardData;
+          // a screenshot or copied picture comes as a file (a copied web image may also carry HTML; the file wins)
+          const files = [...(dt?.files || [])].filter(isImage);
+          if (files.length && !editor.isActive('codeBlock')) { insertImages(editor, files); return true; }
           const text = dt?.getData('text/plain');
           if (!text || editor.isActive('codeBlock')) return false;
           const html = dt.getData('text/html');
@@ -401,6 +476,15 @@ const SmartPaste = Extension.create({
             return true;
           }
           return false;
+        },
+        handleDrop(view, event, slice, moved) {
+          if (moved) return false;
+          const files = [...(event.dataTransfer?.files || [])].filter(isImage);
+          if (!files.length) return false;
+          event.preventDefault();
+          const at = view.posAtCoords({ left: event.clientX, top: event.clientY });
+          insertImages(editor, files, at ? at.pos : undefined);
+          return true;
         },
       },
     })];
@@ -462,6 +546,7 @@ export function buildExtensions(ctx = {}) {
       link: { openOnClick: false, autolink: true, linkOnPaste: true, HTMLAttributes: { rel: 'noopener noreferrer', target: null } },
       dropcursor: { color: '#8ab4f8', width: 2 },
     }),
+    Picture,
     CodeBlock.configure({ lowlight, defaultLanguage: 'plaintext', enableTabIndentation: true, tabSize: 2, exitOnTripleEnter: true, exitOnArrowDown: true }),
     Highlight.configure({ multicolor: true }),
     TextStyle, Color, FontSize,
@@ -514,7 +599,7 @@ export function docIsEmpty(doc) {
   (function walk(n) {
     if (!empty || !n) return;
     if (n.type === 'text' && n.text?.trim()) { empty = false; return; }
-    if (n.type === 'mention' || n.type === 'horizontalRule' || n.type === 'terminal') { empty = false; return; }
+    if (n.type === 'mention' || n.type === 'horizontalRule' || n.type === 'terminal' || n.type === 'image') { empty = false; return; }
     n.content?.forEach(walk);
   })(doc);
   return empty;

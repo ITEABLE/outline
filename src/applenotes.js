@@ -79,6 +79,7 @@ function block(n) {
     // Apple Notes collapses ordinary spaces, so indentation is sent as non-breaking spaces
     case 'codeBlock': return textOf(n).split('\n').map(l => `<div><tt>${esc(l.replace(/\t/g, '  ')).replace(/ /g, '&nbsp;') || '<br>'}</tt></div>`).join('');
     case 'horizontalRule': return '<div>———</div>';
+    case 'image': return '<div><tt>[Picture — open this note in Outline to see it]</tt></div>';
     case 'terminal': return '<div><tt>[Terminal — open this note in Outline to use it]</tt></div>';
     default: return kids();
   }

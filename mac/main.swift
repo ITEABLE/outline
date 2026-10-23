@@ -122,9 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         controller.add(self, name: "store")
         controller.addScriptMessageHandler(AppleNotesBridge(storeDir: storeDir), contentWorld: .page, name: "appleNotes")
         controller.addScriptMessageHandler(terminals, contentWorld: .page, name: "term")
+        let images = ImageStore(storeDir: storeDir)
+        controller.addScriptMessageHandler(images, contentWorld: .page, name: "images")
         controller.addUserScript(bootScript(try? String(contentsOf: storeURL, encoding: .utf8)))
         let config = WKWebViewConfiguration()
         config.userContentController = controller
+        config.setURLSchemeHandler(images, forURLScheme: ImageStore.scheme)
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground") // no white flash before the page paints
@@ -233,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
 
     // OUTLINE_SELFTEST=<file>: once the page has loaded, send one request through the Apple Notes
     // bridge (the backup action, which doesn't touch Notes), run a command in a real terminal, open
-    // its window, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
+    // its window, save and show a picture, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let out = env["OUTLINE_SELFTEST"], webView === self.webView else { return }
         let js = """
@@ -269,8 +272,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
           for (let i = 0; i < 40 && viewers < 2; i++) { await new Promise(r => setTimeout(r, 200)); viewers = await t.postMessage({ op: 'viewers', sid }); }
           await t.postMessage({ op: 'closeWindow', sid });
           await t.postMessage({ op: 'gc', keep: [] });
+          // a picture saved to a file and shown back through outline-image://
+          const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+          const src = await window.webkit.messageHandlers.images.postMessage({ op: 'save', type: 'image/png', b64: png });
+          const shown = await new Promise(ok => { const i = new Image(); i.onload = () => ok(i.naturalWidth === 1); i.onerror = () => ok(false); i.src = src; });
           return backup + ' term=' + (/^outline-42/m.test(text) ? 'ok' : 'fail:' + JSON.stringify(text.slice(-300)))
-            + ' window=' + (viewers >= 2 ? 'ok' : 'fail') + ' folder=' + info.tabs[0].cwd + claude;
+            + ' window=' + (viewers >= 2 ? 'ok' : 'fail') + ' folder=' + info.tabs[0].cwd + claude
+            + ' image=' + (shown ? 'ok' : 'fail:' + src);
         } catch (e) { return 'failed: ' + e.message; }
         """
         webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
@@ -284,11 +292,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         }
     }
 
+    // MARK: file pickers — WKWebView shows nothing for <input type=file> unless the app does
+
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo) async -> [URL]? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.allowedContentTypes = [.image]
+        guard let win = webView.window else { return panel.runModal() == .OK ? panel.urls : nil }
+        return await panel.beginSheetModal(for: win) == .OK ? panel.urls : nil
+    }
+
     // MARK: links — anything that isn't the app itself opens in the default browser
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url else { return .allow }
-        if url.isFileURL || url.scheme == "about" { return .allow }
+        // a file dropped outside the editor must never replace the app's page
+        if url.isFileURL { return url.path.hasPrefix(Bundle.main.resourcePath ?? "/-") ? .allow : .cancel }
+        if url.scheme == "about" { return .allow }
         NSWorkspace.shared.open(url)
         return .cancel
     }
