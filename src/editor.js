@@ -23,6 +23,7 @@ import markdown from 'highlight.js/lib/languages/markdown';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { marked } from 'marked';
 import { detect } from './detect.js';
+import { TerminalNode, termBridge, newSid } from './terminal.js';
 
 export const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -273,6 +274,7 @@ function popup(renderItem) {
 const SLASH = [
   ...BLOCKS,
   { id: 'divider', label: 'Divider', icon: '—', keys: 'hr line separator' },
+  { id: 'terminal', label: 'Terminal', icon: '›_', keys: 'shell console command zsh claude', hint: 'a live shell' },
   { id: 'subnote', label: 'Sub-note', icon: '+', keys: 'page child note inside', hint: 'a note inside this one' },
   { id: 'mention', label: 'Link to a note', icon: '@', keys: 'mention reference' },
 ];
@@ -288,11 +290,12 @@ function slashCommands(ctx) {
         shouldShow: ({ editor }) => !editor.isActive('codeBlock'),
         items: ({ query }) => {
           const q = query.toLowerCase();
-          return SLASH.filter(s => !q || s.id.startsWith(q) || s.label.toLowerCase().includes(q) || s.keys?.includes(q));
+          return SLASH.filter(s => (s.id !== 'terminal' || termBridge) && (!q || s.id.startsWith(q) || s.label.toLowerCase().includes(q) || s.keys?.includes(q)));
         },
         command: ({ editor, range, props }) => {
           editor.chain().focus().deleteRange(range).run();
           if (props.id === 'divider') editor.chain().focus().setHorizontalRule().run();
+          else if (props.id === 'terminal') insertTerminal(editor);
           else if (props.id === 'subnote') ctx.promptSubnote?.(editor);
           else if (props.id === 'mention') editor.chain().focus().insertContent('@').run();
           else setBlock(editor, props.id);
@@ -363,7 +366,7 @@ export function mdToHtml(md) {
 
 // Pasting several lines onto an empty bullet (every new note starts as one) would put the
 // whole paste — headings, code, lists — inside that bullet. Step out of the list first.
-function leaveEmptyListItem(editor) {
+export function leaveEmptyListItem(editor) {
   const { empty, $from } = editor.state.selection;
   if (!empty || $from.parent.content.size) return;
   for (const type of ['listItem', 'taskItem']) {
@@ -403,6 +406,17 @@ const SmartPaste = Extension.create({
     })];
   },
 });
+
+// Adds a live terminal under the caret (stepping out of an empty bullet first), with a line after it to keep typing.
+export function insertTerminal(editor) {
+  leaveEmptyListItem(editor);
+  const { $from } = editor.state.selection;
+  const empty = $from.parent.type.name === 'paragraph' && !$from.parent.content.size && $from.depth === 1;
+  const node = { type: 'terminal', attrs: { sid: newSid() } };
+  if (empty) editor.chain().focus().insertContentAt({ from: $from.before(), to: $from.after() }, [node, { type: 'paragraph' }]).run();
+  else editor.chain().focus().insertContent([node, { type: 'paragraph' }]).run();
+  return true;
+}
 
 /* ---------- keys ---------- */
 function keys(ctx) {
@@ -457,6 +471,7 @@ export function buildExtensions(ctx = {}) {
       placeholder: ({ node }) => node.type.name === 'heading' ? `Heading ${node.attrs.level}`
         : node.type.name === 'codeBlock' ? '' : 'Type / for blocks, @ to link a note',
     }),
+    TerminalNode.configure({ noteTitle: () => ctx.noteTitle?.() ?? '' }),
     noteLinks(ctx),
     slashCommands(ctx),
     SmartPaste,
@@ -499,7 +514,7 @@ export function docIsEmpty(doc) {
   (function walk(n) {
     if (!empty || !n) return;
     if (n.type === 'text' && n.text?.trim()) { empty = false; return; }
-    if (n.type === 'mention' || n.type === 'horizontalRule') { empty = false; return; }
+    if (n.type === 'mention' || n.type === 'horizontalRule' || n.type === 'terminal') { empty = false; return; }
     n.content?.forEach(walk);
   })(doc);
   return empty;

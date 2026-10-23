@@ -1,10 +1,11 @@
 // End-to-end test of the editor in Chrome: node tests/editor.test.mjs (after `node build.mjs`).
 // Drives dist/index.html; section 1 also runs the v1 → v2 migration on your real pre-v2 backup if one exists.
 import { chromium } from 'playwright-core';
+import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 
 const PAGE = new URL('../dist/index.html', import.meta.url).href;
-const OUT = new URL('./.output/', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('./.output/', import.meta.url));
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const SUPP = process.env.HOME + '/Library/Application Support/Outline/';
 mkdirSync(OUT, { recursive: true });

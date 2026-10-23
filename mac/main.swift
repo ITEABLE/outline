@@ -97,11 +97,12 @@ final class AppleNotesBridge: NSObject, WKScriptMessageHandlerWithReply {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var pending: String?
     var backedUp = false
+    var terminals: TerminalManager!
 
     // OUTLINE_STORE_DIR / OUTLINE_HIDDEN let a test run use a scratch copy of the notes without a window.
     let env = ProcessInfo.processInfo.environment
@@ -115,9 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         buildMenu()
         try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
 
+        terminals = TerminalManager(storeDir: storeDir)
+        terminals.app = self
         let controller = WKUserContentController()
         controller.add(self, name: "store")
         controller.addScriptMessageHandler(AppleNotesBridge(storeDir: storeDir), contentWorld: .page, name: "appleNotes")
+        controller.addScriptMessageHandler(terminals, contentWorld: .page, name: "term")
         controller.addUserScript(bootScript(try? String(contentsOf: storeURL, encoding: .utf8)))
         let config = WKWebViewConfiguration()
         config.userContentController = controller
@@ -139,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         win.backgroundColor = NSColor(srgbRed: 0x13 / 255, green: 0x14 / 255, blue: 0x17 / 255, alpha: 1)
         win.minSize = NSSize(width: 680, height: 440)
         win.isReleasedWhenClosed = false
+        win.delegate = self
 
         let content = NSView()
         win.contentView = content
@@ -227,11 +232,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     }
 
     // OUTLINE_SELFTEST=<file>: once the page has loaded, send one request through the Apple Notes
-    // bridge (the backup action, which doesn't touch Notes), write the reply to <file>, and quit.
+    // bridge (the backup action, which doesn't touch Notes), run a command in a real terminal, open
+    // its window, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let out = env["OUTLINE_SELFTEST"] else { return }
-        webView.callAsyncJavaScript("return await window.webkit.messageHandlers.appleNotes.postMessage({ action: 'backup' })",
-                                    arguments: [:], in: nil, in: .page) { result in
+        guard let out = env["OUTLINE_SELFTEST"], webView === self.webView else { return }
+        let js = """
+        try {
+          const backup = await window.webkit.messageHandlers.appleNotes.postMessage({ action: 'backup' });
+          // every request gets a deadline, so a request that never answers fails the test instead of hanging it
+          const term = window.webkit.messageHandlers.term, sid = 'selftest', done = [];
+          const t = { postMessage: m => Promise.race([
+            term.postMessage(m).then(v => { done.push(m.op); return v; }),
+            new Promise((_, no) => setTimeout(() => no(new Error(`no reply to ${m.op} (after ${done.join(', ')})`)), 6000)),
+          ]) };
+          await t.postMessage({ op: 'attach', sid });
+          const s = await t.postMessage({ op: 'start', sid, cols: 80, rows: 24 });
+          await t.postMessage({ op: 'input', sid, tab: s.tab, data: 'echo outline-$((40+2))\\r' });
+          let text = '';
+          for (let i = 0; i < 50 && !/^outline-42/m.test(text); i++) {
+            await new Promise(r => setTimeout(r, 200));
+            text = await t.postMessage({ op: 'text', sid, tab: s.tab });
+          }
+          const info = await t.postMessage({ op: 'attach', sid });
+          let claude = '';
+          if (\(env["OUTLINE_SELFTEST_CLAUDE"] != nil)) {
+            await t.postMessage({ op: 'claude', sid, tab: s.tab });
+            let title = '';
+            for (let i = 0; i < 50 && title !== 'claude'; i++) {
+              await new Promise(r => setTimeout(r, 200));
+              title = (await t.postMessage({ op: 'attach', sid })).tabs[0].title;
+            }
+            claude = ' claude=' + (title === 'claude' ? 'ok' : 'fail:' + title);
+          }
+          await t.postMessage({ op: 'expand', sid, title: 'Self-test' });
+          let viewers = 0; // the block's page + the window's page
+          for (let i = 0; i < 40 && viewers < 2; i++) { await new Promise(r => setTimeout(r, 200)); viewers = await t.postMessage({ op: 'viewers', sid }); }
+          await t.postMessage({ op: 'closeWindow', sid });
+          await t.postMessage({ op: 'gc', keep: [] });
+          return backup + ' term=' + (/^outline-42/m.test(text) ? 'ok' : 'fail:' + JSON.stringify(text.slice(-300)))
+            + ' window=' + (viewers >= 2 ? 'ok' : 'fail') + ' folder=' + info.tabs[0].cwd + claude;
+        } catch (e) { return 'failed: ' + e.message; }
+        """
+        webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
             let text: String
             switch result {
             case .success(let value): text = "ok \(value)"
@@ -275,11 +317,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard !quitReplied else { return }
         quitReplied = true
         flush()
+        terminals?.save()
+        terminals?.killAll()
         NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) { flush() }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // closing the notes window quits, even if terminal windows are still open
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === window { NSApp.terminate(nil) }
+    }
 
     func buildMenu() {
         let main = NSMenu()

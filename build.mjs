@@ -5,7 +5,7 @@ import { mkdir, copyFile, rm } from 'node:fs/promises';
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
 await build({
-  entryPoints: { app: 'src/app.js' },
+  entryPoints: { app: 'src/app.js', term: 'src/term-window.js' },
   bundle: true,
   minify: !process.env.DEV, // DEV=1 node build.mjs → readable stack traces
   format: 'iife',
@@ -15,4 +15,5 @@ await build({
   logLevel: 'warning',
 });
 await copyFile('src/index.html', 'dist/index.html');
+await copyFile('src/term.html', 'dist/term.html');
 console.log('Built dist/');

@@ -1,5 +1,6 @@
 import './styles.css';
-import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, esc } from './editor.js';
+import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, insertTerminal, esc } from './editor.js';
+import { termBridge } from './terminal.js';
 import { migrateV1 } from './migrate.js';
 import { docToNotesHtml, notesHtmlToDoc, notesHash, hashText } from './applenotes.js';
 
@@ -26,6 +27,7 @@ const ICON = {
   clear: svg('<path d="M3.5 3.5h7M7 3.5V12"/><path d="M10.5 9.5l3 3M13.5 9.5l-3 3"/>'),
   subnote: svg('<path d="M4 2.5h5l3 3v8H4z"/><path d="M8 7.5v4M6 9.5h4"/>'),
   width: svg('<path d="M2 8h12M4.5 5.5L2 8l2.5 2.5M11.5 5.5L14 8l-2.5 2.5"/>'),
+  terminal: svg('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M4.75 6.25L6.5 8l-1.75 1.75M8 10h3"/>'),
 };
 const HIGHLIGHTS = [['None', ''], ['Yellow', 'rgba(240,198,116,.32)'], ['Green', 'rgba(158,206,106,.28)'], ['Blue', 'rgba(122,162,247,.32)'], ['Pink', 'rgba(247,118,142,.30)'], ['Purple', 'rgba(187,154,247,.30)']];
 const COLORS = [['Default', ''], ['Grey', '#8b9099'], ['Red', '#f7768e'], ['Orange', '#ff9e64'], ['Yellow', '#e0af68'], ['Green', '#9ece6a'], ['Blue', '#7aa2f7'], ['Purple', '#bb9af7']];
@@ -776,6 +778,7 @@ function toolbarHTML() {
     <button class="tb-btn" data-cmd="clear" title="Clear formatting">${ICON.clear}</button>
     <span class="tb-sep"></span>
     <button class="tb-btn labeled" data-cmd="codeblock" title="Selection → code block (⌘↵)"><span class="mono">{ }</span><span class="lbl">Code</span></button>
+    ${termBridge ? `<button class="tb-btn labeled" data-cmd="terminal" title="Add a live terminal">${ICON.terminal}<span class="lbl">Terminal</span></button>` : ''}
     <button class="tb-btn labeled" data-cmd="subnote" title="New sub-note inside this note">${ICON.subnote}<span class="lbl">Sub-note</span></button>
     <span class="tb-fill"></span>
     <button class="tb-btn" data-cmd="wide" title="Full width">${ICON.width}</button>`;
@@ -798,6 +801,7 @@ function runCmd(pane, cmd, value, el) {
     case 'link': promptLink(ed); break;
     case 'clear': c().unsetAllMarks().run(); break;
     case 'codeblock': codeBlockFromSelection(ed); break;
+    case 'terminal': insertTerminal(ed); break;
     case 'subnote': promptSubnote(ed, h.noteId); break;
     case 'wide': state.wide = !state.wide; applyWide(); save(); break;
   }
@@ -990,6 +994,7 @@ function ensureHost(pane, noteId) {
       promptLink,
       promptSubnote: ed => promptSubnote(ed, noteId),
       onEscape: () => focusTitle(noteId),
+      noteTitle: () => titleOf(noteId),
     },
     onUpdate: ed => {
       const it = byId(noteId);
@@ -1056,3 +1061,9 @@ renderTree();
 renderPanes();
 if (native) saveNow();
 focusTitle(currentId());
+// terminals whose blocks are gone from every note are closed and forgotten
+if (termBridge) {
+  const keep = new Set();
+  (function walk(n) { if (!n) return; if (n.type === 'terminal' && n.attrs?.sid) keep.add(n.attrs.sid); n.content?.forEach(walk); })({ content: state.items.map(it => it.doc) });
+  termBridge.postMessage({ op: 'gc', keep: [...keep] });
+}
