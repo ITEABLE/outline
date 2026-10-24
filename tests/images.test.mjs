@@ -90,6 +90,23 @@ async function pasteImage(page, w, h, color = '#7aa2f7') {
   pics = imagesIn(await savedDoc(page), 'Pics');
   check('new size is saved', Math.abs(pics[0].width - 320) < 12, JSON.stringify(pics[0]));
 
+  // corners: TipTap's own corner handles never changed the width; dragging straight down or left must work
+  const corner = async (name, dx, dy) => {
+    const b = await page.locator(IMG).boundingBox();
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    const c = await page.locator(`${PM} [data-resize-handle="${name}"]`).boundingBox();
+    await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(c.x + c.width / 2 + dx, c.y + c.height / 2 + dy, { steps: 8 });
+    await page.mouse.up();
+    return page.locator(IMG).boundingBox();
+  };
+  let c1 = await corner('bottomRight', 0, 40);
+  check('dragging the bottom-right corner down grows it', Math.abs(c1.width - 400) < 12, `${c1.width}`);
+  c1 = await corner('bottomLeft', 80, 0);
+  check('dragging the bottom-left corner inwards shrinks it', Math.abs(c1.width - 320) < 12, `${c1.width}`);
+  check('corners keep its shape', Math.abs(c1.width / c1.height - 2) < 0.05, `${c1.width}×${c1.height}`);
+
   // drop a file onto the note
   await page.evaluate(async sel => {
     const c = Object.assign(document.createElement('canvas'), { width: 100, height: 100 });

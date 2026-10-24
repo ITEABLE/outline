@@ -103,7 +103,7 @@ Format v2 (`notes.json`):
 9. **Pictures:**
    - paste a screenshot or copied picture (⌘V), drop picture files onto a note, or use the toolbar's **Picture** button or `/picture` (Mac file picker, several at once)
    - a Retina screenshot starts at the size it was on screen; it never grows past the note's width
-   - hover a picture to show its handles: drag the left/right edges or bottom corners to resize (the shape is kept); the size is saved
+   - hover a picture to show its handles: drag the left/right edges (the whole edge lights up) or the bottom corners to resize; corners follow whichever way you drag, so pulling straight down grows it. The shape is kept and the size is saved
    - click a picture to select it; Backspace deletes it (pictures can't be dragged to move them: that drag stopped resizing from working in the Mac app)
    - in a plain browser, pictures are stored inside the note (data URLs)
 
@@ -174,7 +174,7 @@ Format v2 (`notes.json`):
   - adding a block (toolbar, `/terminal`), output, keys going to the shell and not the note
   - the default folder, the folder menu (default, Home, recent, Choose…), the Claude button and ⌘J, tabs (new, switch, rename), the window hand-off
   - saving the block, `gc` after a relaunch, removing, the terminal window's shortcuts, the plain-browser placeholder
-- **`tests/images.test.mjs`** covers pasting a screenshot (size, placement, caret after it), resizing by dragging an edge (shape kept, size saved), dropping a file, the Picture button's file picker, `/picture`, reload, and, against a stand-in for the Mac app, that pictures are handed to the app to save instead of stored in the note.
+- **`tests/images.test.mjs`** covers pasting a screenshot (size, placement, caret after it), resizing by dragging an edge and both corners (shape kept, size saved), dropping a file, the Picture button's file picker, `/picture`, reload, and, against a stand-in for the Mac app, that pictures are handed to the app to save instead of stored in the note.
 
 **Real Mac app, safely:** these environment variables make it use a scratch copy and no window.
 
@@ -188,6 +188,7 @@ cat /tmp/outline-test/result.txt   # "ok notes.before-import…json term=ok wind
 - `OUTLINE_STORE_DIR`: use another notes folder.
 - `OUTLINE_HIDDEN`: no window and no Dock icon.
 - `OUTLINE_SELFTEST=<file>`: after load, send one `backup` request through the Apple Notes bridge, run `echo` in a real shell, open and close its window (not shown when hidden), save a picture and load it back through `outline-image://`, write the results to `<file>`, and quit.
+- `OUTLINE_RESIZETEST=<file>`: drags a handle of the first picture in the notes with real macOS mouse events (AppKit → WebKit, like a trackpad), writes `before=<width> after=<width>` and the mouse events the page saw, and quits. `OUTLINE_RESIZE_HANDLE` (right, left, bottomRight, bottomLeft) and `OUTLINE_RESIZE_DX` / `OUTLINE_RESIZE_DY` set the drag. The window sits off-screen, so your own pointer can't interfere. Use a scratch `OUTLINE_STORE_DIR` holding a note with one picture.
 - `OUTLINE_SELFTEST_CLAUDE=1`: the self-test also starts the Claude CLI in the terminal and checks the tab is titled "claude" (sends no message).
 
 **The Apple Notes script by hand.** This creates real notes, so only use a throwaway folder name:
@@ -211,6 +212,7 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
 - **Saving:** it is batched (~0.4s). On quit, Swift calls `window.__flush()` and writes what it returns.
 - **Build target:** the web bundle targets Safari 15 (macOS 12), and the toolbar uses CSS container queries to wrap and shorten in narrow panes.
 - **Apple Notes naming:** Apple Notes takes a note's name from its first line; Outline sends the title first and strips that line when bringing a note back.
+- **Picture corners:** TipTap 3.31's `ResizableNodeView` never resizes from corner handles: it checks `direction.includes('right')`, which misses `bottomRight`. `src/editor.js` replaces its `calculateNewDimensions` for the two bottom corners. Recheck this if TipTap is upgraded.
 - **Pictures and WKWebView:** `<input type=file>` shows nothing unless the app implements `runOpenPanelWith` (done in `main.swift`), and the input must be in the page or it may never report its files. A file dropped outside the editor would make WKWebView open it in place of the app, so the page swallows such drops and `decidePolicyFor` refuses file URLs outside the app bundle.
 - **No `MainActor.assumeIsolated`:** it crashed the app from a timer on this macOS. `mac/terminal.swift` uses selector timers, `perform(_:afterDelay:)` and `DispatchQueue.main.async { @MainActor in … }`.
 - **Errors in async message handlers vanish:** an Objective-C exception inside one (e.g. a bad URL passed to `loadFileURL`) never replies, and the page waits forever. The self-test gives every request a deadline for that reason.
@@ -252,6 +254,8 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
 
 - **`npm test`:** all four suites report ALL PASSED (2026-10-24). The editor suite's "toolbar bold" check still fails now and then under load (the old selection-timing flake); it passed on rerun.
 - **Real app self-test on a copy of the owner's notes:** `term=ok window=ok folder=/Users/apple/Desktop/Claude outline image=ok` (a picture saved to `images/` and shown back). The app quit cleanly, with no shells left running.
+- **Real-mouse resize test (`OUTLINE_RESIZETEST`):** 11 of 11 drags gave the expected width: both edges in and out, and both corners horizontally, vertically and diagonally. Before the corner fix, every corner drag left the picture unchanged.
 - **Installed:** `/Applications/Outline.app` on 2026-10-24, with a valid code signature. Notes were backed up first (`notes.before-pictures.20261024-023814.json`).
-- **Not seen yet by a person:** pasting a real screenshot, the picture picker and the folder picker on screen, and the terminal window. The pieces are tested, but only in Chrome and in the hidden test mode.
+- **Reported by the owner:** resizing pictures didn't work (2026-10-24). Cause: the corner handles, the visible squares, never resized because of the TipTap bug above. Fixed, and checked with real mouse events.
+- **Not seen yet by a person:** the fixed resizing, the picture picker and the folder picker on screen, and the terminal window. The pieces are tested, but only in Chrome and in the hidden test mode.
 - **Earlier (2026-09-12):** live Apple Notes send, update and fetch worked in a throwaway folder. The first "Send to Apple Notes" from the installed app will show macOS's permission prompt.

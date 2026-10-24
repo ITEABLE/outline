@@ -238,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     // bridge (the backup action, which doesn't touch Notes), run a command in a real terminal, open
     // its window, save and show a picture, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let out = env["OUTLINE_RESIZETEST"], webView === self.webView { resizeTest(out); return }
         guard let out = env["OUTLINE_SELFTEST"], webView === self.webView else { return }
         let js = """
         try {
@@ -289,6 +290,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             }
             try? text.write(toFile: out, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
+        }
+    }
+
+    // OUTLINE_RESIZETEST=<file>: drags a handle of the first picture with real mouse events (through AppKit and
+    // WebKit, like a trackpad), writes "before=<width> after=<width>" plus the mouse events the page saw, and quits.
+    // OUTLINE_RESIZE_HANDLE picks the handle (right, left, bottomRight, bottomLeft; default right) and
+    // OUTLINE_RESIZE_DX / _DY the drag in points (default -150, 0). The window sits off-screen, almost transparent.
+    func resizeTest(_ out: String) {
+        window.alphaValue = 0.02 // a fully transparent window ignores the mouse
+        window.makeKeyAndOrderFront(nil)
+        // far off every screen, so the real pointer can't reach it (setFrameOrigin isn't constrained to screens)
+        window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+        NSApp.activate(ignoringOtherApps: true)
+        let finish = { (text: String) in try? text.write(toFile: out, atomically: true, encoding: .utf8); NSApp.terminate(nil) }
+        let handle = env["OUTLINE_RESIZE_HANDLE"] ?? "right"
+        let dx = Double(env["OUTLINE_RESIZE_DX"] ?? "") ?? -150, dy = Double(env["OUTLINE_RESIZE_DY"] ?? "") ?? 0
+        let probe = """
+        const img = document.querySelector('.ProseMirror [data-resize-wrapper] img');
+        const h = document.querySelector('.ProseMirror [data-resize-handle=\(handle)]');
+        if (!img || !h) return null;
+        if (!window.__ev) {
+          window.__ev = [];
+          for (const t of ['mousedown', 'mousemove', 'mouseup']) document.addEventListener(t, e =>
+            window.__ev.push(`${t}:${e.target.dataset?.resizeHandle || e.target.tagName}:${Math.round(e.clientX)},${Math.round(e.clientY)}`), true);
+        }
+        const r = img.getBoundingClientRect(), hr = h.getBoundingClientRect();
+        return { x: hr.left + hr.width / 2, y: hr.top + hr.height / 2, cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: Math.round(r.width), ev: window.__ev.join(' ') };
+        """
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, in: .page) { result in
+                let num = { (d: [String: Any], k: String) in (d[k] as? NSNumber)?.doubleValue ?? .nan }
+                guard case .success(let v) = result, let r = v as? [String: Any], let before = r["w"] else { finish("no picture: \(result)"); return }
+                let (x, y, cx, cy) = (num(r, "x"), num(r, "y"), num(r, "cx"), num(r, "cy"))
+                // page coordinates (top-left origin) → window coordinates (bottom-left origin)
+                let h = self.webView.bounds.height
+                let at = { (px: Double, py: Double) in NSPoint(x: px, y: h - py) }
+                var steps: [(NSEvent.EventType, NSPoint)] = [(.mouseMoved, at(cx, cy)), (.mouseMoved, at(x, y)), (.leftMouseDown, at(x, y))]
+                for i in 1...10 { steps.append((.leftMouseDragged, at(x + Double(i) * dx / 10, y + Double(i) * dy / 10))) }
+                steps.append((.leftMouseUp, at(x + dx, y + dy)))
+                for (i, (type, p)) in steps.enumerated() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(i + 1)) {
+                        if let e = NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                      windowNumber: self.window.windowNumber, context: nil, eventNumber: i, clickCount: 1,
+                                                      pressure: type == .leftMouseDown || type == .leftMouseDragged ? 1 : 0) {
+                            self.window.sendEvent(e)
+                        }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08 * Double(steps.count + 1) + 0.5) {
+                    self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, in: .page) { after in
+                        let d = (try? after.get() as? [String: Any]) ?? [:]
+                        finish("before=\(before) after=\(d["w"] ?? "?")\nevents=\(d["ev"] ?? "")")
+                    }
+                }
+            }
         }
     }
 

@@ -262,18 +262,27 @@ aside {
 .ProseMirror .ProseMirror-selectednode img, .ProseMirror img.ProseMirror-selectednode { outline: 2px solid rgba(138, 180, 248, .6); outline-offset: 2px; }
 .ProseMirror [data-resize-handle] { z-index: 2; opacity: 0; transition: opacity .12s; }
 .ProseMirror [data-resize-container]:hover [data-resize-handle], .ProseMirror .ProseMirror-selectednode [data-resize-handle] { opacity: 1; }
-.ProseMirror [data-resize-handle="left"], .ProseMirror [data-resize-handle="right"] { width: 12px; cursor: ew-resize; }
-.ProseMirror [data-resize-handle="left"] { left: -6px !important; }
-.ProseMirror [data-resize-handle="right"] { right: -6px !important; }
+.ProseMirror [data-resize-handle="left"], .ProseMirror [data-resize-handle="right"] { width: 16px; cursor: ew-resize; }
+.ProseMirror [data-resize-handle="left"] { left: -8px !important; }
+.ProseMirror [data-resize-handle="right"] { right: -8px !important; }
+/* the whole edge lights up on hover; a grip in the middle shows where to hold */
+.ProseMirror [data-resize-handle="left"]::before, .ProseMirror [data-resize-handle="right"]::before {
+  content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; border-radius: 2px; background: rgba(138, 180, 248, .35);
+}
 .ProseMirror [data-resize-handle="left"]::after, .ProseMirror [data-resize-handle="right"]::after {
-  content: ""; position: absolute; left: 4px; top: 50%; width: 4px; height: 36px; margin-top: -18px;
-  border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+  content: ""; position: absolute; left: 5px; top: 50%; width: 6px; height: 40px; margin-top: -20px;
+  border-radius: 4px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
 }
+.ProseMirror [data-resize-handle="left"]:hover::before, .ProseMirror [data-resize-handle="right"]:hover::before,
+.ProseMirror [data-resize-state="true"] [data-resize-handle]::before { background: var(--accent); }
 .ProseMirror [data-resize-handle="bottomLeft"], .ProseMirror [data-resize-handle="bottomRight"] {
-  width: 12px; height: 12px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+  width: 14px; height: 14px; border-radius: 4px; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); z-index: 3;
 }
-.ProseMirror [data-resize-handle="bottomLeft"] { left: -5px !important; bottom: -5px !important; cursor: nesw-resize; }
-.ProseMirror [data-resize-handle="bottomRight"] { right: -5px !important; bottom: -5px !important; cursor: nwse-resize; }
+.ProseMirror [data-resize-handle="bottomLeft"] { left: -7px !important; bottom: -7px !important; cursor: nesw-resize; }
+.ProseMirror [data-resize-handle="bottomRight"] { right: -7px !important; bottom: -7px !important; cursor: nwse-resize; }
+/* while resizing, keep the handles shown and stop text from being selected */
+.ProseMirror [data-resize-state="true"] [data-resize-handle] { opacity: 1; }
+body:has([data-resize-state="true"]) { user-select: none; -webkit-user-select: none; }
 
 /* code blocks */
 .code {

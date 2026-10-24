@@ -1,4 +1,4 @@
-import { Editor, Extension } from '@tiptap/core';
+import { Editor, Extension, ResizableNodeView } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Highlight from '@tiptap/extension-highlight';
 import { TextStyle, Color, FontSize } from '@tiptap/extension-text-style';
@@ -236,6 +236,19 @@ export function pickImages(editor) {
   input.click();
   return true;
 }
+
+// TipTap's corner handles never resize: it looks for "right"/"left" in "bottomRight"/"bottomLeft" and misses
+// the capital letter, so the width never changes. Corners are handled here instead, following whichever way
+// the pointer moved most (dragging straight down grows the picture too); the shape is always kept.
+const calcSize = ResizableNodeView.prototype.calculateNewDimensions;
+ResizableNodeView.prototype.calculateNewDimensions = function (direction, dx, dy) {
+  if (direction !== 'bottomRight' && direction !== 'bottomLeft') return calcSize.call(this, direction, dx, dy);
+  const ratio = this.aspectRatio || this.startWidth / this.startHeight || 1;
+  const byX = this.startWidth + (direction === 'bottomRight' ? dx : -dx);
+  const byY = (this.startHeight + dy) * ratio;
+  const width = Math.abs(byX - this.startWidth) >= Math.abs(byY - this.startWidth) ? byX : byY;
+  return { width, height: width / ratio };
+};
 
 // Not draggable as a whole: in the Mac app a drag on the picture grabbed the mouse before its resize handles could.
 const Picture = Image.extend({ draggable: false }).configure({
