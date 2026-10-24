@@ -114,17 +114,31 @@ Format v2 (`notes.json`):
 
 ## Terminals
 
-**Adding one:** the toolbar's **Terminal** button, or `/terminal`. The block is a real login shell (your zsh, prompt and all), 12 rows tall, starting in **`~/Desktop/Claude outline`** (the owner's choice, `defaultFolder` in `mac/terminal.swift`; home if that folder is gone).
+**Adding one:** the toolbar's **Terminal** button, or `/terminal`, opens the **session picker** (below): Enter on "New terminal" gives a fresh shell. The block is a real login shell (your zsh, prompt and all), 12 rows tall, starting in **`~/Desktop/Claude outline`** (the owner's choice, `defaultFolder` in `mac/terminal.swift`; home if that folder is gone).
 
 - **Folder:** the folder button in the header shows where the tab is. Its menu offers the default folder, Home, recently picked folders and **Choose folder…** (the Mac folder picker). Picking one types `cd -- '<folder>'` into the shell; if a program is running there, it opens a new tab in that folder instead.
 
 - **Tabs:** **+** in the block's header adds a tab (it starts in the current tab's folder). Click a tab to switch, double-click to rename, **×** to close. Unnamed tabs show the running program (vim, node…) or the folder.
 - **Its own window:** the expand button opens the session in a window with the same tabs. Every tab opened there belongs to that note's terminal. While the window is open, the block says so ("Show window"); close the window and the block shows the shell again. In the window: ⌘T new tab, ⌘W close tab (on the last tab, closes the window), ⇧⌘[ / ⇧⌘] switch, ⌘1–9 pick a tab.
+- **Sessions (picker):** the picker (also the 🔍 button in a terminal's header, which opens the pick as a new tab of that terminal) lists, newest first:
+  - **New terminal**
+  - **Terminals**: every mirrored terminal (see below) with the app it's in (VS Code, Terminal, iTerm, Outline…), what's running, its folder and when it was last used, plus any tmux session started by hand. Picking one attaches to it (`tmux -L outline attach -t '=<id>'`), so typing in either place shows in both. Closing the tab only detaches.
+  - **Claude Code sessions** (`~/.claude/projects/<folder>/<session id>.jsonl`, titled by Claude's summary or the first message): picking one starts the tab in that session's folder and runs `claude --resume <id>`.
+  - **Search** matches the session ID (any part), app, program, folder or Claude title, and for terminals also the text on their screen.
+  - **Hover** (or arrow to) a row to see a preview: a terminal's current screen (`tmux capture-pane`), or a Claude session's last messages.
+  - The tab remembers its command (`command` in `terminals.json`) and runs it whenever its shell starts again, so after a relaunch it reattaches or resumes by itself.
+  - **Finding an ID:** the bottom of the picker shows, with Copy buttons, `echo $OUTLINE_SESSION` (any mirrored terminal) and the Claude command `! basename "$(ls -t ~/.claude/projects/"$(pwd | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl | head -1)" .jsonl` (the newest Claude session in that folder; Claude names its folders by replacing every non-alphanumeric character of the path with `-`).
+- **Mirror every terminal** (the switch in the picker): no app can read another app's terminal on macOS, so a terminal can only be shared if it runs inside something Outline can reach. With the switch on, a line at the top of `~/.zshrc` sources `~/Library/Application Support/Outline/shell/mirror.zsh` (copied from `mac/mirror.zsh` at every launch, next to `mac/tmux.conf`). In every interactive terminal (with a real tty, not already in tmux), it starts the shell inside a session on Outline's own tmux socket (`-L outline`), named `<app>-<4 chars>` (e.g. `vscode-k3p9`), and sets `OUTLINE_SESSION` and the `@app` option.
+  - The tmux settings make it feel like a plain terminal: no status bar, no prefix key, the outer terminal's own scrollback, size follows whoever typed last. A session closes when its last terminal does, and `exit` closes the terminal as usual.
+  - If tmux can't start, the hook does nothing. `OUTLINE_NO_MIRROR=1` skips it for one terminal. Only terminals opened after the switch is turned on are mirrored.
+  - Turning it on backs up `~/.zshrc` once, to `~/.zshrc.before-outline`. Turning it off removes the line.
+  - Outline's own plain tabs are mirrored too, as `outline-<tab>`. Tabs that attach to or resume a session aren't (`OUTLINE_NO_MIRROR`). For tabs inside a mirrored session, titles, folders and "is it at its prompt" are read through tmux (`list-sessions` once a second).
+  - The Claude CLI's process is named after its version, so `programName()` shows it as "claude".
 - **Claude:** the ✻ Claude button (or ⌘J in the terminal) types `claude` into the shell, so it's the real Claude CLI, running in that tab's folder, exactly as if you'd typed it. If another program is running in the tab, Claude starts in a new tab; if Claude is already running there, nothing happens. (Until 2026-10-24 this was a short-answer question bar using `claude -p`; the owner asked for the real CLI instead.)
 - **After a relaunch:** tabs, names, folders and recent output come back; a new shell starts under a "earlier output · new shell" line. Running programs don't survive quitting.
 - **Removing:** the trash button (asks first). Terminals no note uses any more are closed and forgotten the next time Outline starts (`gc`), so undo works until then.
 
-**How it works:** `webkit.messageHandlers.term.postMessage({ op, sid, … })` → `TerminalManager` (ops: attach, detach, start, input, resize, select, newTab, closeTab, rename, expand, closeWindow, claude, folders, chooseFolder, cd, text, viewers, gc). Output goes back as `window.__termEvent({ type: 'data', sid, tab, at, b64 })`, batched per frame; `at` is the byte position, so a view never draws output twice. Tab and window changes go out as `{ type: 'info', … }` to every page showing that session.
+**How it works:** `webkit.messageHandlers.term.postMessage({ op, sid, … })` → `TerminalManager` (ops: attach, detach, start, input, resize, select, newTab, closeTab, rename, expand, closeWindow, claude, folders, chooseFolder, cd, sessions, openSession, preview, mirror, text, viewers, gc). Output goes back as `window.__termEvent({ type: 'data', sid, tab, at, b64 })`, batched per frame; `at` is the byte position, so a view never draws output twice. Tab and window changes go out as `{ type: 'info', … }` to every page showing that session.
 
 ## Apple Notes sync
 
@@ -172,7 +186,7 @@ Format v2 (`notes.json`):
   - conversion of **real Apple Notes HTML** captured from the live test, the permission-error message, and no button in plain browsers
 - **`tests/terminal.test.mjs`** runs against a stand-in for `mac/terminal.swift`. It covers:
   - adding a block (toolbar, `/terminal`), output, keys going to the shell and not the note
-  - the default folder, the folder menu (default, Home, recent, Choose…), the Claude button and ⌘J, tabs (new, switch, rename), the window hand-off
+  - the session picker (new terminal / terminals / Claude rows with app badges, search by ID, hover previews, the mirror switch, the ID commands, opening a session as a block or as a tab, Esc), the default folder, the folder menu, the Claude button and ⌘J, tabs (new, switch, rename), the window hand-off
   - saving the block, `gc` after a relaunch, removing, the terminal window's shortcuts, the plain-browser placeholder
 - **`tests/images.test.mjs`** covers pasting a screenshot (size, placement, caret after it), resizing by dragging an edge and both corners (shape kept, size saved), dropping a file, the Picture button's file picker, `/picture`, reload, and, against a stand-in for the Mac app, that pictures are handed to the app to save instead of stored in the note.
 
@@ -182,13 +196,14 @@ Format v2 (`notes.json`):
 mkdir -p /tmp/outline-test && cp ~/Library/Application\ Support/Outline/notes.json /tmp/outline-test/
 OUTLINE_STORE_DIR=/tmp/outline-test OUTLINE_HIDDEN=1 OUTLINE_SELFTEST=/tmp/outline-test/result.txt \
   build/Outline.app/Contents/MacOS/Outline
-cat /tmp/outline-test/result.txt   # "ok notes.before-import…json term=ok window=ok folder=…/Claude outline image=ok"; app quits by itself
+cat /tmp/outline-test/result.txt   # "ok … term=ok window=ok folder=…/Claude outline sessions=9 claude, search ok, tmux listed + attached image=ok"; quits by itself
 ```
 
 - `OUTLINE_STORE_DIR`: use another notes folder.
 - `OUTLINE_HIDDEN`: no window and no Dock icon.
-- `OUTLINE_SELFTEST=<file>`: after load, send one `backup` request through the Apple Notes bridge, run `echo` in a real shell, open and close its window (not shown when hidden), save a picture and load it back through `outline-image://`, write the results to `<file>`, and quit.
+- `OUTLINE_SELFTEST=<file>`: after load, send one `backup` request through the Apple Notes bridge, run `echo` in a real shell, open and close its window (not shown when hidden), list Claude Code sessions and search one by ID, start a throwaway tmux session, open it in a tab, check it attached and delete it, save a picture and load it back through `outline-image://`, write the results to `<file>`, and quit.
 - `OUTLINE_RESIZETEST=<file>`: drags a handle of the first picture in the notes with real macOS mouse events (AppKit → WebKit, like a trackpad), writes `before=<width> after=<width>` and the mouse events the page saw, and quits. `OUTLINE_RESIZE_HANDLE` (right, left, bottomRight, bottomLeft) and `OUTLINE_RESIZE_DX` / `OUTLINE_RESIZE_DY` set the drag. The window sits off-screen, so your own pointer can't interfere. Use a scratch `OUTLINE_STORE_DIR` holding a note with one picture.
+- `OUTLINE_SELFTEST_MIRROR=<session>`: also finds that mirrored terminal, previews it, attaches in a tab and types `echo from-outline-42` into it.
 - `OUTLINE_SELFTEST_CLAUDE=1`: the self-test also starts the Claude CLI in the terminal and checks the tab is titled "claude" (sends no message).
 
 **The Apple Notes script by hand.** This creates real notes, so only use a throwaway folder name:
@@ -249,13 +264,18 @@ osascript -l JavaScript -e "const N=Application('Notes'); N.delete(N.defaultAcco
   5. Terminals in notes: tabs, their own window, and quick short answers from Claude (2026-10-24)
   6. Terminals start in `~/Desktop/Claude outline` with a folder menu; the Claude button starts the real CLI (2026-10-24)
   7. Pictures: paste, drop, pick and resize (2026-10-24)
+  8. Fixed picture resizing (corners) and added a README (2026-10-24)
+  9. Session picker: open tmux and Claude Code sessions in terminals, search by session ID (2026-10-24)
+  10. The ID commands shown in the picker; mirroring every terminal (VS Code, Terminal, Outline…) with hover previews (2026-10-24)
 
 ## Test results at handoff
 
 - **`npm test`:** all four suites report ALL PASSED (2026-10-24). The editor suite's "toolbar bold" check still fails now and then under load (the old selection-timing flake); it passed on rerun.
-- **Real app self-test on a copy of the owner's notes:** `term=ok window=ok folder=/Users/apple/Desktop/Claude outline image=ok` (a picture saved to `images/` and shown back). The app quit cleanly, with no shells left running.
+- **Real app self-test on a copy of the owner's notes:** `term=ok window=ok folder=/Users/apple/Desktop/Claude outline sessions=9 claude, search ok, tmux listed + attached image=ok`. The throwaway tmux session was removed afterwards. The app quit cleanly, with no shells left running.
 - **Real-mouse resize test (`OUTLINE_RESIZETEST`):** 11 of 11 drags gave the expected width: both edges in and out, and both corners horizontally, vertically and diagonally. Before the corner fix, every corner drag left the picture unchanged.
 - **Installed:** `/Applications/Outline.app` on 2026-10-24, with a valid code signature. Notes were backed up first (`notes.before-pictures.20261024-023814.json`).
+- **Mirroring end to end (2026-10-24):** a pretend VS Code terminal (a real zsh with the hook loaded through a temporary `ZDOTDIR`) became `vscode-0qxa`. The real app found it (app, folder), its preview showed what was typed there, and Outline attached and typed `echo from-outline-42`, which the VS Code terminal received. After Outline closed its tab the session stayed, and after the terminal exited it was gone.
+- **Mirroring is off:** the owner's `~/.zshrc` was not changed. Claude Code's permission settings blocked a test from editing it, so the owner turns mirroring on with the switch in the picker.
 - **Reported by the owner:** resizing pictures didn't work (2026-10-24). Cause: the corner handles, the visible squares, never resized because of the TipTap bug above. Fixed, and checked with real mouse events.
-- **Not seen yet by a person:** the fixed resizing, the picture picker and the folder picker on screen, and the terminal window. The pieces are tested, but only in Chrome and in the hidden test mode.
+- **Not seen yet by a person:** the session picker and mirroring in real VS Code / Terminal windows, the fixed resizing, the picture picker and the folder picker on screen, and the terminal window. The pieces are tested, but only in Chrome and in the hidden test mode.
 - **Earlier (2026-09-12):** live Apple Notes send, update and fetch worked in a throwaway folder. The first "Send to Apple Notes" from the installed app will show macOS's permission prompt.

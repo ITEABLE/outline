@@ -24,7 +24,7 @@ import markdown from 'highlight.js/lib/languages/markdown';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { marked } from 'marked';
 import { detect } from './detect.js';
-import { TerminalNode, termBridge, newSid } from './terminal.js';
+import { TerminalNode, termBridge, newSid, pickSession, openSession } from './terminal.js';
 
 export const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -379,7 +379,7 @@ function slashCommands(ctx) {
         command: ({ editor, range, props }) => {
           editor.chain().focus().deleteRange(range).run();
           if (props.id === 'divider') editor.chain().focus().setHorizontalRule().run();
-          else if (props.id === 'terminal') insertTerminal(editor);
+          else if (props.id === 'terminal') chooseTerminal(editor);
           else if (props.id === 'image') pickImages(editor);
           else if (props.id === 'subnote') ctx.promptSubnote?.(editor);
           else if (props.id === 'mention') editor.chain().focus().insertContent('@').run();
@@ -504,12 +504,24 @@ const SmartPaste = Extension.create({
   },
 });
 
+// Asks what the new terminal should show (a fresh shell, or a Claude Code / tmux session), then adds it.
+// `anchor` is where the picker opens; by default under the caret.
+export async function chooseTerminal(editor, anchor) {
+  if (!anchor) { const c = editor.view.coordsAtPos(editor.state.selection.from); anchor = { x: c.left, y: c.bottom + 8 }; }
+  const pick = await pickSession(anchor);
+  if (!pick || editor.isDestroyed) { editor.commands.focus(); return; }
+  if (pick.kind === 'new') return insertTerminal(editor);
+  const sid = newSid();
+  try { await openSession(sid, pick); } catch (e) { alert(e.message || String(e)); return; }
+  insertTerminal(editor, sid);
+}
+
 // Adds a live terminal under the caret (stepping out of an empty bullet first), with a line after it to keep typing.
-export function insertTerminal(editor) {
+export function insertTerminal(editor, sid = newSid()) {
   leaveEmptyListItem(editor);
   const { $from } = editor.state.selection;
   const empty = $from.parent.type.name === 'paragraph' && !$from.parent.content.size && $from.depth === 1;
-  const node = { type: 'terminal', attrs: { sid: newSid() } };
+  const node = { type: 'terminal', attrs: { sid } };
   if (empty) editor.chain().focus().insertContentAt({ from: $from.before(), to: $from.after() }, [node, { type: 'paragraph' }]).run();
   else editor.chain().focus().insertContent([node, { type: 'paragraph' }]).run();
   return true;

@@ -27,6 +27,7 @@ const I = {
   plus: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>',
   x: '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>',
   expand: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h4v4M13.5 2.5L9 7M6.5 13.5h-4v-4M2.5 13.5L7 9"/></svg>',
+  search: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.25"/><path d="M10.25 10.25l3.25 3.25"/></svg>',
   folder: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 4.5a1 1 0 011-1h3l1.5 1.5H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1z"/></svg>',
   trash: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>',
 };
@@ -51,6 +52,7 @@ export class TermView {
         <span class="term-ico" aria-hidden="true">›_</span>
         <div class="term-tabs"></div>
         <button type="button" class="term-btn" data-act="new" title="New terminal tab${compact ? '' : ' (⌘T)'}">${I.plus}</button>
+        <button type="button" class="term-btn" data-act="sessions" title="Open a Claude or tmux session in a new tab">${I.search}</button>
         <span class="term-sp"></span>
         <button type="button" class="term-btn term-folder" data-act="folder" title="Change folder">${I.folder}<span class="lbl"></span></button>
         <button type="button" class="term-btn term-claude" data-act="claude" title="Start Claude in this terminal (⌘J)"><span class="spark">✻</span><span class="lbl">Claude</span></button>
@@ -97,6 +99,14 @@ export class TermView {
       if (!b) return;
       const a = b.dataset.act;
       if (a === 'new') this.newTab();
+      else if (a === 'sessions') {
+        const r = b.getBoundingClientRect();
+        pickSession({ x: r.left, y: r.bottom + 6 }).then(pick => {
+          if (pick?.kind === 'new') this.newTab();
+          else if (pick) openSession(sid, pick).then(() => this.focus(), e => alert(e.message || e));
+          else this.focus();
+        });
+      }
       else if (a === 'claude') this.claude();
       else if (a === 'folder') this.menuEl.hidden ? this.folderMenu(b) : this.closeMenu();
       else if (a === 'cd') { this.closeMenu(); call('cd', { sid, tab: this.tab, path: b.dataset.path }).then(() => this.focus(), () => {}); }
@@ -253,6 +263,174 @@ export class TermView {
     if (termBridge) call('detach', { sid: this.sid });
     this.term.dispose();
   }
+}
+
+/* ---------- sessions: pick a new terminal, a Claude Code session or a tmux session ---------- */
+
+// Commands shown in the picker for finding the ID of the session you want to mirror.
+const CLAUDE_ID = `basename "$(ls -t ~/.claude/projects/"$(pwd | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl | head -1)" .jsonl`;
+export const SESSION_COMMANDS = [
+  { label: 'Any terminal', where: 'run in it (VS Code, Terminal, iTerm…)', cmd: 'echo $OUTLINE_SESSION' },
+  { label: 'Claude Code session', where: 'type in that Claude session', cmd: `! ${CLAUDE_ID}` },
+];
+// Where a mirrored terminal lives, by the app that opened it.
+const APPS = {
+  vscode: ['VS Code', 'VS'], terminal: ['Terminal', '›_'], iterm: ['iTerm', 'i'], outline: ['Outline', 'O'],
+  warp: ['Warp', 'W'], ghostty: ['Ghostty', 'g'], shell: ['Terminal', '$'], tmux: ['tmux', 't'],
+};
+const appOf = it => APPS[it.app] || APPS.shell;
+
+const ago = ms => {
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  if (s < 86400 * 30) return `${Math.round(s / 86400)} d ago`;
+  return new Date(ms).toLocaleDateString();
+};
+const shortPath = p => (p || '').replace(/^\/Users\/[^/]+/, '~');
+
+// Opens a picked session as a new tab of terminal `sid` (made if it doesn't exist yet). Resolves to the tab id.
+export function openSession(sid, pick) {
+  const name = pick.kind === 'claude' ? `✻ ${pick.title.slice(0, 28)}` : pick.id;
+  return call('openSession', { sid, kind: pick.kind, id: pick.id, cwd: pick.cwd, socket: pick.socket, name });
+}
+
+// Shows the session picker at `anchor` ({ x, y } in the page). Resolves to { kind: 'new' }, a session, or null.
+export function pickSession(anchor) {
+  return new Promise(resolve => {
+    const el = document.createElement('div');
+    el.className = 'sess';
+    el.innerHTML = `
+      <div class="sess-search">${I.search}<input placeholder="Search sessions, or paste a session ID" autocomplete="off" spellcheck="false"></div>
+      <div class="sess-list" role="listbox"></div>
+      <div class="sess-help">
+        <div class="sess-mirror"><div class="sess-cmd-text"><span class="sess-cmd-label">Mirror every terminal</span><span class="sess-mirror-note"></span></div><button type="button" class="sess-toggle" role="switch" aria-checked="false" data-act="mirror"><span></span></button></div>
+        <div class="sess-help-title">Find the ID of the session you want to mirror</div>
+        ${SESSION_COMMANDS.map((c, i) => `<div class="sess-cmd"><div class="sess-cmd-text"><span class="sess-cmd-label">${esc(c.label)} <span>· ${esc(c.where)}</span></span><code>${esc(c.cmd)}</code></div><button type="button" class="sess-copy" data-cmd="${i}">Copy</button></div>`).join('')}
+      </div>
+      <div class="sess-preview" hidden><div class="sess-preview-head"></div><pre></pre></div>`;
+    document.body.append(el);
+    const input = el.querySelector('input'), list = el.querySelector('.sess-list');
+    const preview = el.querySelector('.sess-preview'), toggle = el.querySelector('.sess-toggle');
+    let items = [], index = 0, seq = 0, timer = 0, done = false, mirror = false, peekTimer = 0, peekSeq = 0;
+
+    const place = () => {
+      const w = el.offsetWidth, h = el.offsetHeight;
+      el.style.left = Math.max(8, Math.min(anchor.x, innerWidth - w - 8)) + 'px';
+      el.style.top = (anchor.y + h > innerHeight - 8 ? Math.max(8, anchor.y - h - 30) : anchor.y) + 'px';
+    };
+    const row = (it, i) => {
+      const on = i === index ? ' on' : '';
+      if (it.kind === 'new') return `<button type="button" class="sess-row${on}" data-i="${i}"><span class="sess-badge new">›_</span><span class="sess-main"><span class="sess-title">New terminal</span><span class="sess-meta">a fresh shell in your default folder</span></span></button>`;
+      if (it.kind === 'tmux') {
+        const [app, badge] = appOf(it);
+        const folder = shortPath(it.cwd).split('/').pop() || '~';
+        const title = it.program ? `${it.program} · ${folder}` : folder;
+        return `<button type="button" class="sess-row${on}" data-i="${i}"><span class="sess-badge app-${esc(it.app)}">${esc(badge)}</span><span class="sess-main"><span class="sess-title">${esc(title)}</span><span class="sess-meta">${esc(app)} · <code>${esc(it.id)}</code> · ${it.attached ? 'open' : 'detached'} · ${ago(it.time)}${it.match === 'screen' ? ' · matched on screen' : ''}</span></span></button>`;
+      }
+      if (it.kind === 'claude') return `<button type="button" class="sess-row${on}" data-i="${i}" title="${esc(it.id)}"><span class="sess-badge claude">✻</span><span class="sess-main"><span class="sess-title">${esc(it.title)}</span><span class="sess-meta"><code>${esc(it.id.slice(0, 8))}</code> · ${esc(shortPath(it.cwd))} · ${ago(it.time)}</span></span></button>`;
+      return '';
+    };
+    const draw = res => {
+      const q = input.value.trim();
+      items = [...(q ? [] : [{ kind: 'new' }]), ...(res?.tmux || []), ...(res?.claude || [])];
+      index = Math.min(index, Math.max(0, items.length - 1));
+      const lead = q ? 0 : 1, nT = res?.tmux?.length || 0;
+      let html = '';
+      items.forEach((it, i) => {
+        if (i === lead && nT) html += '<div class="sess-label">Terminals</div>';
+        if (i === lead + nT && res?.claude?.length) html += '<div class="sess-label">Claude Code sessions</div>';
+        html += row(it, i);
+      });
+      if (res && !res.tmuxInstalled) html += '<div class="sess-note">Mirroring terminals needs tmux. Install it with <code>brew install tmux</code>.</div>';
+      else if (res && !q && !nT) html += `<div class="sess-note">${mirror ? 'No mirrored terminals yet. Terminals you open from now on show up here.' : 'Turn on “Mirror every terminal” below to see the terminals you open in VS Code, Terminal and anywhere else.'}</div>`;
+      if (q && !items.length && res) html += '<div class="sess-note">No session matches “' + esc(q) + '”.</div>';
+      list.innerHTML = html;
+      list.querySelector('.sess-row.on')?.scrollIntoView({ block: 'nearest' });
+      place();
+    };
+    const showMirror = () => {
+      toggle.setAttribute('aria-checked', String(mirror));
+      toggle.classList.toggle('on', mirror);
+      el.querySelector('.sess-mirror-note').textContent = mirror
+        ? 'On: every new terminal you open (VS Code, Terminal, iTerm, Outline…) can be found here.'
+        : 'Off: only terminals started in tmux show up.';
+    };
+    const load = async () => {
+      const my = ++seq;
+      const res = await call('sessions', { query: input.value.trim() }).catch(() => null);
+      if (my !== seq || done) return;
+      if (res) { mirror = !!res.mirror; showMirror(); }
+      draw(res);
+    };
+    // hovering (or arrowing to) a session shows what's on its screen, or a Claude session's last messages
+    const peek = it => {
+      clearTimeout(peekTimer);
+      if (!it || it.kind === 'new') { preview.hidden = true; return; }
+      peekTimer = setTimeout(async () => {
+        const my = ++peekSeq;
+        const text = await call('preview', { kind: it.kind, id: it.id, socket: it.socket }).catch(() => '');
+        if (my !== peekSeq || done) return;
+        const lines = String(text || '').replace(/\s+$/, '').split('\n');
+        preview.querySelector('pre').textContent = (it.kind === 'tmux' ? lines.slice(-24) : lines).join('\n') || '(nothing on screen yet)';
+        preview.querySelector('.sess-preview-head').textContent = it.kind === 'claude' ? `Claude · ${it.id.slice(0, 8)} · ${shortPath(it.cwd)}` : `${appOf(it)[0]} · ${it.id} · ${shortPath(it.cwd)}`;
+        preview.hidden = false;
+        const r = el.getBoundingClientRect(), w = preview.offsetWidth;
+        preview.classList.toggle('left', r.right + 8 + w > innerWidth - 8 && r.left - 8 - w > 8);
+        preview.querySelector('pre').scrollTop = 1e6;
+      }, 120);
+    };
+    list.addEventListener('mouseover', e => { const b = e.target.closest('[data-i]'); if (b) peek(items[+b.dataset.i]); });
+    list.addEventListener('mouseleave', () => peek(items[index]));
+    const finish = pick => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearTimeout(peekTimer);
+      document.removeEventListener('mousedown', outside, true);
+      el.remove();
+      resolve(pick);
+    };
+    const outside = e => { if (!el.contains(e.target)) finish(null); };
+
+    input.addEventListener('input', () => { index = 0; clearTimeout(timer); timer = setTimeout(load, 150); });
+    input.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!items.length) return;
+        index = (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        list.querySelectorAll('.sess-row').forEach(b => b.classList.toggle('on', +b.dataset.i === index));
+        list.querySelector('.sess-row.on')?.scrollIntoView({ block: 'nearest' });
+        peek(items[index]);
+      } else if (e.key === 'Enter') { e.preventDefault(); if (items[index]) finish(items[index]); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    });
+    el.addEventListener('mousedown', e => { if (e.target !== input) e.preventDefault(); });
+    list.addEventListener('click', e => { const b = e.target.closest('[data-i]'); if (b) finish(items[+b.dataset.i]); });
+    el.querySelector('.sess-help').addEventListener('click', async e => {
+      if (e.target.closest('[data-act=mirror]')) {
+        try { mirror = await call('mirror', { on: !mirror }); } catch (err) { alert(err.message || err); }
+        showMirror();
+        load();
+        input.focus();
+        return;
+      }
+      const b = e.target.closest('[data-cmd]');
+      if (!b) return;
+      const text = SESSION_COMMANDS[+b.dataset.cmd].cmd;
+      try { await navigator.clipboard.writeText(text); }
+      catch { const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+      b.textContent = 'Copied';
+      setTimeout(() => { b.textContent = 'Copy'; }, 1200);
+      input.focus();
+    });
+    setTimeout(() => document.addEventListener('mousedown', outside, true));
+    draw(null);
+    input.focus();
+    load();
+  });
 }
 
 // The note block. It only stores which session it shows; the shells, tabs and history live in the Mac app.

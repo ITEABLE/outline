@@ -10,15 +10,19 @@
 		</data>
 		<key>Resources/app.css</key>
 		<data>
-		6QIYxtmeHd/IX3lyB/tJQeiI5qY=
+		aNhwl1fJrxF5emk/M/1lKBO6t0k=
 		</data>
 		<key>Resources/app.js</key>
 		<data>
-		w8Ovjn7jALvlZIdFKlWOWXlDZBo=
+		5krXfHAu0fIVB8phiPOXZLB1p3c=
 		</data>
 		<key>Resources/index.html</key>
 		<data>
 		32niEb8ZVImVK5qAcmK+F+4mClc=
+		</data>
+		<key>Resources/mirror.zsh</key>
+		<data>
+		gmys79m5ta1Q+vGi0Aq1yHLLlEo=
 		</data>
 		<key>Resources/notes.js</key>
 		<data>
@@ -26,7 +30,7 @@
 		</data>
 		<key>Resources/term.css</key>
 		<data>
-		6QIYxtmeHd/IX3lyB/tJQeiI5qY=
+		aNhwl1fJrxF5emk/M/1lKBO6t0k=
 		</data>
 		<key>Resources/term.html</key>
 		<data>
@@ -34,7 +38,11 @@
 		</data>
 		<key>Resources/term.js</key>
 		<data>
-		sucIaIDz1V1NNssPPjiN0mCOPOU=
+		aZY6AO21cD/vWILyPtP1kYWB7E8=
+		</data>
+		<key>Resources/tmux.conf</key>
+		<data>
+		vt71exL6J6OOdNuOdQLap85kEKo=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -50,14 +58,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			5g1lDCO0SpH7SXXRYocgxX/atF4lIREhqJh+HZj+9no=
+			hYXu4tcNcXqKbRBjRREYN1K9l77hEZoR/25pu7xwfl8=
 			</data>
 		</dict>
 		<key>Resources/app.js</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			73ClYOxql5V8WYmnj//HsEpslV4xDcFlZvZT+LLuoqI=
+			O7qlHzxO3NevwHUxPHCskdn8e/bXixb34tHF822gTQk=
 			</data>
 		</dict>
 		<key>Resources/index.html</key>
@@ -65,6 +73,13 @@
 			<key>hash2</key>
 			<data>
 			qjeN+ugm/z2vObn5kJysx0KhPLTJjJXnOtNQjDBAnW4=
+			</data>
+		</dict>
+		<key>Resources/mirror.zsh</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ZB2RCNB9M9tL/RXoRQ4ucC0Pz8ssdSip3QgLDgkwA68=
 			</data>
 		</dict>
 		<key>Resources/notes.js</key>
@@ -78,7 +93,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			5g1lDCO0SpH7SXXRYocgxX/atF4lIREhqJh+HZj+9no=
+			hYXu4tcNcXqKbRBjRREYN1K9l77hEZoR/25pu7xwfl8=
 			</data>
 		</dict>
 		<key>Resources/term.html</key>
@@ -92,7 +107,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			FYCT9rxdh3iIHDMZ0aXHn3jDnP6aHI9/Dj1EHeYTS9E=
+			fN5JQJHgMh6rJfxsvnUObLreYZtTYHPTEV5uC6RumA4=
+			</data>
+		</dict>
+		<key>Resources/tmux.conf</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			FNRcMBySUW+qQNatOaAO3inUOkIGqPj8FE6m87PvO1U=
 			</data>
 		</dict>
 	</dict>

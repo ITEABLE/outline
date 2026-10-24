@@ -25,6 +25,8 @@ final class TermTab {
     var source: DispatchSourceRead?
     let writeQueue = DispatchQueue(label: "outline.term.write")
     var restored = false // log came from disk; a new shell gets a divider under it
+    var command = ""     // typed into every new shell of this tab (resuming a Claude session, attaching to tmux)
+    var mirror = ""      // name of the mirrored (tmux) session this tab shows, for its title, folder and prompt
     var running: Bool { pid > 0 }
 
     init(id: String, name: String = "", cwd: String) {
@@ -53,6 +55,8 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
     private var titleTimer: Timer?
     private let ioQueue = DispatchQueue(label: "outline.term.io")
     private var recent: [String] = [] // folders picked lately, newest first
+    private var panes: [String: (command: String, path: String)] = [:] // mirrored sessions' active panes, refreshed each second
+    private var panesLoading = false
 
     var fileURL: URL { storeDir.appendingPathComponent("terminals.json") }
 
@@ -60,6 +64,7 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
         self.storeDir = storeDir
         super.init()
         load()
+        installMirrorFiles()
         // selector timers and main-queue blocks (not MainActor.assumeIsolated, which crashed here)
         titleTimer = Timer.scheduledTimer(timeInterval: 1, target: self, selector: #selector(refreshTitles), userInfo: nil, repeats: true)
     }
@@ -159,6 +164,40 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
             guard ok == .OK, let url = panel.url else { return (nil, nil) }
             go(to: url.path, tab: tab, sid: sid)
             return (url.path, nil)
+        case "sessions":
+            // mirrored terminals, tmux and Claude Code sessions to open in a tab, newest first, filtered by `query`
+            let query = (body["query"] as? String ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+            var res = await Self.findSessions(query)
+            res["mirror"] = Self.mirrorInstalled()
+            return (res, nil)
+        case "preview":
+            // what a session shows now: a terminal's screen, or a Claude conversation's last messages
+            let id = body["id"] as? String ?? ""
+            if body["kind"] as? String == "claude" { return (await Self.background { Self.claudeTail(id) }, nil) }
+            let socket = body["socket"] as? String ?? "outline"
+            return (await Self.background { Self.tmux(socket, ["capture-pane", "-p", "-J", "-t", "=\(id):"]) }, nil)
+        case "mirror":
+            // turns "mirror every terminal" on or off (a line at the top of ~/.zshrc)
+            do { try Self.setMirror(body["on"] as? Bool ?? false); return (Self.mirrorInstalled(), nil) }
+            catch { return (nil, "Outline couldn't change ~/.zshrc: \(error.localizedDescription)") }
+        case "openSession":
+            // opens a Claude Code session (resumed) or a tmux session (attached) as a new tab
+            guard let kind = body["kind"] as? String, let id = body["id"] as? String, !sid.isEmpty else { return (nil, "Outline didn't get a session to open.") }
+            let command: String
+            if kind == "claude", id.range(of: "^[0-9a-fA-F-]{8,}$", options: .regularExpression) != nil { command = "claude --resume \(id)" }
+            else if kind == "tmux" {
+                let socket = body["socket"] as? String == "default" ? "" : "-L outline "
+                command = "tmux \(socket)attach -t " + Self.quote("=" + id)
+            }
+            else { return (nil, "That isn't a session Outline can open.") }
+            let cwd = (body["cwd"] as? String).flatMap { Self.isFolder($0) ? $0 : nil } ?? Self.startFolder
+            let tab = TermTab(id: Self.uid(), name: body["name"] as? String ?? "", cwd: cwd)
+            tab.command = command
+            if kind == "tmux" && body["socket"] as? String != "default" { tab.mirror = id }
+            if let s = sessions[sid] { s.tabs.append(tab); s.active = tab.id }
+            else { sessions[sid] = TermSession(tabs: [tab], active: tab.id) }
+            changed(sid)
+            return (tab.id, nil)
         case "cd":
             guard let s = sessions[sid], let tab = s.tab(body["tab"] as? String) ?? s.tab(s.active),
                   let path = body["path"] as? String, Self.isFolder(path) else { return (nil, "That folder doesn't exist.") }
@@ -231,7 +270,15 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
 
         // Everything the child needs is prepared before fork: after it, only exec-safe calls.
         let argv: [UnsafeMutablePointer<CChar>?] = [strdup("-" + (shell as NSString).lastPathComponent), nil]
-        let envp: [UnsafeMutablePointer<CChar>?] = Self.shellEnv().map { strdup("\($0.key)=\($0.value)") } + [nil]
+        var env = Self.shellEnv()
+        if tab.command.isEmpty {
+            // when mirroring is on, this tab's shell becomes the mirrored session "outline-<tab>"
+            tab.mirror = "outline-" + tab.id.prefix(6)
+            env["OUTLINE_MIRROR_ID"] = tab.mirror
+        } else {
+            env["OUTLINE_NO_MIRROR"] = "1" // it attaches to or resumes a session itself
+        }
+        let envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
         let cShell = strdup(shell), cDir = strdup(dir)
         defer { argv.forEach { free($0) }; envp.forEach { free($0) }; free(cShell); free(cDir) }
 
@@ -277,6 +324,7 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
         }
         tab.source = src
         src.resume()
+        if !tab.command.isEmpty { send(tab, Data("\(tab.command)\r".utf8)) } // the shell reads it once its prompt is up
         if let sid = sid(of: tab) { changed(sid) }
     }
 
@@ -339,17 +387,56 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
 
     // Keeps tab titles current: a running program's name (vim, node…) or the shell's folder.
     @objc func refreshTitles() {
+        var mirrored = false
         for (sid, s) in sessions {
             var dirty = false
             for tab in s.tabs where tab.running {
-                if let dir = Self.cwd(of: tab.pid), dir != tab.cwd { tab.cwd = dir; dirty = true }
+                var dir = Self.cwd(of: tab.pid)
                 var title = ""
                 let fg = tcgetpgrp(tab.fd)
                 if fg > 0 && fg != tab.pid { title = Self.processName(fg) }
+                // inside a mirrored session the program in front is tmux; look through it
+                if title == "tmux", let pane = panes[tab.mirror] {
+                    title = Self.shells.contains(pane.command) ? "" : pane.command
+                    dir = pane.path
+                }
+                if title == "tmux" { mirrored = true }
+                if !tab.mirror.isEmpty { mirrored = true }
+                if let dir, dir != tab.cwd { tab.cwd = dir; dirty = true }
                 if title != tab.title { tab.title = title; dirty = true }
             }
             if dirty { changed(sid) }
         }
+        guard mirrored, !panesLoading else { return }
+        panesLoading = true
+        Task {
+            let out = await Self.background { Self.tmux("outline", ["list-sessions", "-F", "#{session_name}\t#{pane_current_command}\t#{pane_current_path}"]) }
+            var map: [String: (command: String, path: String)] = [:]
+            for line in out.split(separator: "\n") {
+                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                if f.count >= 3 { map[f[0]] = (Self.programName(f[1]), f[2]) }
+            }
+            panes = map
+            panesLoading = false
+        }
+    }
+
+    nonisolated static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "-zsh", "-bash"]
+
+    // True when the tab's shell is waiting at its prompt (seen through a mirrored session if there is one).
+    func atPrompt(_ tab: TermTab) -> Bool {
+        guard tab.running else { return false }
+        let fg = tcgetpgrp(tab.fd)
+        if fg == tab.pid { return true }
+        if Self.processName(fg) == "tmux", let pane = panes[tab.mirror] { return Self.shells.contains(pane.command) }
+        return false
+    }
+
+    // The program in front in the tab, seen through a mirrored session.
+    func frontProgram(_ tab: TermTab) -> String {
+        let name = Self.processName(tcgetpgrp(tab.fd))
+        if name == "tmux", let pane = panes[tab.mirror] { return pane.command }
+        return name
     }
 
     // MARK: windows
@@ -410,9 +497,8 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
     func run(_ command: String, in tab: TermTab, sid: String, unless program: String? = nil) {
         guard let s = sessions[sid] else { return }
         if tab.running {
-            let fg = tcgetpgrp(tab.fd)
-            if fg == tab.pid { send(tab, Data("\u{15}\(command)\r".utf8)); return } // Ctrl-U clears a half-typed line
-            if let program, Self.processName(fg) == program { return }
+            if atPrompt(tab) { send(tab, Data("\u{15}\(command)\r".utf8)); return } // Ctrl-U clears a half-typed line
+            if let program, frontProgram(tab) == program { return }
             let fresh = TermTab(id: Self.uid(), cwd: tab.cwd)
             s.tabs.append(fresh)
             s.active = fresh.id
@@ -431,9 +517,193 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
         recent.insert(path, at: 0)
         recent = Array(recent.prefix(6))
         if !tab.running { tab.cwd = path }
-        let quoted = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        run("cd -- \(quoted)", in: tab, sid: sid)
+        run("cd -- \(Self.quote(path))", in: tab, sid: sid)
         scheduleSave()
+    }
+
+    // MARK: finding sessions
+
+    nonisolated static func quote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
+    nonisolated static func findSessions(_ query: String) async -> [String: Any] {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let (tmux, installed) = tmuxSessions(query)
+                cont.resume(returning: ["claude": claudeSessions(query), "tmux": tmux, "tmuxInstalled": installed])
+            }
+        }
+    }
+
+    // Claude Code keeps each session as ~/.claude/projects/<folder>/<session id>.jsonl.
+    nonisolated static func claudeSessions(_ query: String, limit: Int = 25) -> [[String: Any]] {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: home).appendingPathComponent(".claude/projects")
+        var files: [(URL, Date)] = []
+        for dir in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+            for f in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] where f.pathExtension == "jsonl" {
+                files.append((f, (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast))
+            }
+        }
+        files.sort { $0.1 > $1.1 }
+        var out: [[String: Any]] = []
+        for (i, (file, date)) in files.enumerated() {
+            let id = file.deletingPathExtension().lastPathComponent
+            let idHit = !query.isEmpty && id.lowercased().contains(query)
+            // read only the newest sessions closely; older ones are found by their ID
+            if !idHit && i >= 300 { continue }
+            guard let info = claudeInfo(file) else { continue }
+            if !query.isEmpty && !idHit && !info.cwd.lowercased().contains(query) && !info.title.lowercased().contains(query) { continue }
+            out.append(["kind": "claude", "id": id, "cwd": info.cwd, "title": info.title, "time": date.timeIntervalSince1970 * 1000])
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    // The session's folder and a title: Claude's own summary if it wrote one, else the first thing typed.
+    nonisolated static func claudeInfo(_ file: URL) -> (cwd: String, title: String)? {
+        guard let h = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? h.close() }
+        let data = (try? h.read(upToCount: 256 * 1024)) ?? Data()
+        var cwd = "", first = "", summary = ""
+        for line in data.split(separator: 0x0a) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            if cwd.isEmpty, let c = obj["cwd"] as? String { cwd = c }
+            if summary.isEmpty, obj["type"] as? String == "summary", let t = obj["summary"] as? String { summary = t }
+            if first.isEmpty, obj["type"] as? String == "user", obj["isMeta"] as? Bool != true, obj["isSidechain"] as? Bool != true,
+               let msg = obj["message"] as? [String: Any] {
+                var text = msg["content"] as? String ?? ""
+                if let parts = msg["content"] as? [[String: Any]] { text = parts.first { $0["type"] as? String == "text" }?["text"] as? String ?? "" }
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty && !text.hasPrefix("<") { first = text }
+            }
+            if !cwd.isEmpty && !first.isEmpty && !summary.isEmpty { break }
+        }
+        guard !first.isEmpty || !summary.isEmpty else { return nil } // nothing was ever said in it
+        let title = (summary.isEmpty ? first : summary).replacingOccurrences(of: "\n", with: " ")
+        return (cwd, String(title.prefix(140)))
+    }
+
+    nonisolated static func tmuxPath() -> String? {
+        ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    // Runs tmux on a socket ("outline" = mirrored terminals, "default" = tmux started by hand) and returns its output.
+    nonisolated static func tmux(_ socket: String, _ args: [String]) -> String {
+        guard let path = tmuxPath() else { return "" }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = (socket == "default" ? [] : ["-L", socket]) + args
+        p.environment = shellEnv()
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    nonisolated static func background<T>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { cont in DispatchQueue.global(qos: .userInitiated).async { cont.resume(returning: work()) } }
+    }
+
+    // The Claude CLI's process is named after its version (2.1.310); show it as "claude".
+    nonisolated static func programName(_ name: String) -> String {
+        name.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+$", options: .regularExpression) != nil ? "claude" : name
+    }
+
+    // Mirrored terminals (and any tmux sessions started by hand), newest first. A query matches the ID, app,
+    // program, folder, or text on the session's screen.
+    nonisolated static func tmuxSessions(_ query: String) -> ([[String: Any]], Bool) {
+        guard tmuxPath() != nil else { return ([], false) }
+        var rows: [[String: Any]] = []
+        for socket in ["outline", "default"] {
+            let out = tmux(socket, ["list-sessions", "-F", "#{session_name}\t#{session_activity}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{@app}"])
+            for line in out.split(separator: "\n") {
+                let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                guard f.count >= 6 else { continue }
+                let program = programName(f[3])
+                var row: [String: Any] = ["kind": "tmux", "socket": socket, "id": f[0], "time": (Double(f[1]) ?? 0) * 1000,
+                                          "attached": Int(f[2]) ?? 0, "program": shells.contains(program) ? "" : program,
+                                          "cwd": f[4], "app": socket == "default" ? "tmux" : (f[5].isEmpty ? "shell" : f[5])]
+                if !query.isEmpty {
+                    let fields = [f[0], f[4], program, row["app"] as! String].map { $0.lowercased() }
+                    if !fields.contains(where: { $0.contains(query) }) {
+                        let screen = tmux(socket, ["capture-pane", "-p", "-J", "-t", "=\(f[0]):"]).lowercased()
+                        guard screen.contains(query) else { continue }
+                        row["match"] = "screen"
+                    }
+                }
+                rows.append(row)
+            }
+        }
+        return (rows.sorted { ($0["time"] as? Double ?? 0) > ($1["time"] as? Double ?? 0) }, true)
+    }
+
+    // The last few messages of a Claude Code session, for the picker's preview.
+    nonisolated static func claudeTail(_ id: String) -> String {
+        guard id.range(of: "^[0-9a-fA-F-]{8,}$", options: .regularExpression) != nil else { return "" }
+        let root = URL(fileURLWithPath: home).appendingPathComponent(".claude/projects")
+        let fm = FileManager.default
+        guard let file = ((try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [])
+            .map({ $0.appendingPathComponent(id + ".jsonl") }).first(where: { fm.fileExists(atPath: $0.path) }),
+              let h = try? FileHandle(forReadingFrom: file) else { return "" }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: size > 262_144 ? size - 262_144 : 0)
+        let data = (try? h.readToEnd()) ?? Data()
+        var lines: [String] = []
+        for raw in data.split(separator: 0x0a) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(raw)) as? [String: Any],
+                  obj["isSidechain"] as? Bool != true, obj["isMeta"] as? Bool != true,
+                  let type = obj["type"] as? String, type == "user" || type == "assistant",
+                  let msg = obj["message"] as? [String: Any] else { continue }
+            var text = msg["content"] as? String ?? ""
+            if let parts = msg["content"] as? [[String: Any]] {
+                text = parts.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined(separator: " ")
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+            if text.isEmpty || text.hasPrefix("<") { continue }
+            lines.append((type == "user" ? "› " : "✻ ") + String(text.prefix(280)))
+        }
+        return lines.suffix(6).joined(separator: "\n\n")
+    }
+
+    // MARK: mirroring every terminal
+
+    nonisolated static var shellDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Outline/shell", isDirectory: true)
+    }
+    nonisolated static let zshrcMarker = "# Outline: mirror every terminal"
+    nonisolated static var zshrc: URL { URL(fileURLWithPath: home).appendingPathComponent(".zshrc") }
+
+    // Keeps the hook and its tmux settings current in Application Support, where ~/.zshrc points.
+    func installMirrorFiles() {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: Self.shellDir, withIntermediateDirectories: true)
+        for name in ["mirror.zsh", "tmux.conf"] {
+            guard let src = Bundle.main.url(forResource: (name as NSString).deletingPathExtension, withExtension: (name as NSString).pathExtension),
+                  let data = try? Data(contentsOf: src) else { continue }
+            let dst = Self.shellDir.appendingPathComponent(name)
+            if (try? Data(contentsOf: dst)) != data { try? data.write(to: dst, options: .atomic) }
+        }
+    }
+
+    nonisolated static func mirrorInstalled() -> Bool {
+        ((try? String(contentsOf: zshrc, encoding: .utf8)) ?? "").contains(zshrcMarker)
+    }
+
+    // Adds (at the very top, so it runs before anything else) or removes the line that sources the hook.
+    nonisolated static func setMirror(_ on: Bool) throws {
+        let fm = FileManager.default
+        let text = (try? String(contentsOf: zshrc, encoding: .utf8)) ?? ""
+        if on == text.contains(zshrcMarker) { return }
+        let backup = URL(fileURLWithPath: home).appendingPathComponent(".zshrc.before-outline")
+        if !fm.fileExists(atPath: backup.path), fm.fileExists(atPath: zshrc.path) { try fm.copyItem(at: zshrc, to: backup) }
+        let line = "[[ -r \"$HOME/Library/Application Support/Outline/shell/mirror.zsh\" ]] && source \"$HOME/Library/Application Support/Outline/shell/mirror.zsh\"  \(zshrcMarker)"
+        let updated = on ? line + "\n" + text
+                         : text.split(separator: "\n", omittingEmptySubsequences: false).filter { !$0.contains(zshrcMarker) }.joined(separator: "\n")
+        try updated.write(to: zshrc, atomically: true, encoding: .utf8)
     }
 
     // MARK: saving
@@ -452,7 +722,7 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
         for (sid, s) in sessions {
             out[sid] = [
                 "active": s.active,
-                "tabs": s.tabs.map { ["id": $0.id, "name": $0.name, "cwd": $0.cwd, "log": Self.trimmedForDisk($0.log).base64EncodedString()] },
+                "tabs": s.tabs.map { ["id": $0.id, "name": $0.name, "cwd": $0.cwd, "command": $0.command, "log": Self.trimmedForDisk($0.log).base64EncodedString()] },
             ]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: ["v": 1, "sessions": out, "recent": recent]) else { return }
@@ -468,6 +738,7 @@ final class TerminalManager: NSObject, WKScriptMessageHandlerWithReply, NSWindow
             let tabs: [TermTab] = (s["tabs"] as? [[String: Any]] ?? []).compactMap { t in
                 guard let id = t["id"] as? String else { return nil }
                 let tab = TermTab(id: id, name: t["name"] as? String ?? "", cwd: t["cwd"] as? String ?? Self.startFolder)
+                tab.command = t["command"] as? String ?? ""
                 if let b64 = t["log"] as? String, let log = Data(base64Encoded: b64), !log.isEmpty {
                     tab.log = log; tab.total = log.count; tab.restored = true
                 }

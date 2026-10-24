@@ -1,5 +1,5 @@
 import './styles.css';
-import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, insertTerminal, pickImages, esc } from './editor.js';
+import { createEditor, htmlToDoc, docIsEmpty, relabelDoc, BLOCKS, setBlock, currentBlock, codeBlockFromSelection, chooseTerminal, pickImages, esc } from './editor.js';
 import { termBridge } from './terminal.js';
 import { migrateV1 } from './migrate.js';
 import { docToNotesHtml, notesHtmlToDoc, notesHash, hashText } from './applenotes.js';
@@ -780,7 +780,7 @@ function toolbarHTML() {
     <span class="tb-sep"></span>
     <button class="tb-btn labeled" data-cmd="codeblock" title="Selection → code block (⌘↵)"><span class="mono">{ }</span><span class="lbl">Code</span></button>
     <button class="tb-btn labeled" data-cmd="image" title="Add a picture (or paste / drop one)">${ICON.image}<span class="lbl">Picture</span></button>
-    ${termBridge ? `<button class="tb-btn labeled" data-cmd="terminal" title="Add a live terminal">${ICON.terminal}<span class="lbl">Terminal</span></button>` : ''}
+    ${termBridge ? `<button class="tb-btn labeled" data-cmd="terminal" title="Add a terminal: a new shell, or a Claude Code / tmux session">${ICON.terminal}<span class="lbl">Terminal</span></button>` : ''}
     <button class="tb-btn labeled" data-cmd="subnote" title="New sub-note inside this note">${ICON.subnote}<span class="lbl">Sub-note</span></button>
     <span class="tb-fill"></span>
     <button class="tb-btn" data-cmd="wide" title="Full width">${ICON.width}</button>`;
@@ -803,7 +803,7 @@ function runCmd(pane, cmd, value, el) {
     case 'link': promptLink(ed); break;
     case 'clear': c().unsetAllMarks().run(); break;
     case 'codeblock': codeBlockFromSelection(ed); break;
-    case 'terminal': insertTerminal(ed); break;
+    case 'terminal': { const r = el.getBoundingClientRect(); chooseTerminal(ed, { x: r.left, y: r.bottom + 6 }); break; }
     case 'image': pickImages(ed); break;
     case 'subnote': promptSubnote(ed, h.noteId); break;
     case 'wide': state.wide = !state.wide; applyWide(); save(); break;

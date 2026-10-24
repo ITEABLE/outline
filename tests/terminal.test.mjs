@@ -41,7 +41,7 @@ function fakeMac(raw) {
       window.__calls.push(m);
       const s = sessions[m.sid];
       switch (m.op) {
-        case 'attach': sessions[m.sid] ??= mk(); return { ...sessions[m.sid].pub(), sid: m.sid };
+        case 'attach': sessions[m.sid] ??= mk(); (window.__attachedOnce ??= {})[m.sid] = true; return { ...sessions[m.sid].pub(), sid: m.sid };
         case 'start': {
           const t = s.tabs.find(x => x.id === m.tab) || s.tabs[0];
           if (!t.running) { t.running = true; s.logs[t.id] += `hello from ${t.id}\r\n$ `; }
@@ -51,6 +51,35 @@ function fakeMac(raw) {
         case 'select': s.active = m.tab; fire(info(m.sid)); return null;
         case 'closeTab': s.tabs = s.tabs.filter(t => t.id !== m.tab); s.active = s.tabs[0].id; fire(info(m.sid)); return null;
         case 'rename': s.tabs.find(t => t.id === m.tab).title = m.name; fire(info(m.sid)); return null;
+        case 'sessions': {
+          const all = {
+            claude: [
+              { kind: 'claude', id: 'e3e0d38a-bf27-4f99-9f70-e96ca5ce8500', cwd: '/Users/me/Desktop/Claude Projects/RRG', title: 'read status.md and then push', time: Date.now() - 120000 },
+              { kind: 'claude', id: '6990bc66-315f-4656-8546-99a2429969c6', cwd: '/Users/me/Desktop/Claude outline', title: 'make a hello world script', time: Date.now() - 7200000 },
+            ],
+            tmux: [{ kind: 'tmux', socket: 'outline', app: 'vscode', id: 'vscode-k3p9', program: 'claude', cwd: '/Users/me/code/web', time: Date.now() - 30000, attached: 1 }],
+            tmuxInstalled: true,
+          };
+          const q = (m.query || '').toLowerCase();
+          const hit = x => !q || x.id.toLowerCase().includes(q) || (x.title || '').toLowerCase().includes(q) || x.cwd.toLowerCase().includes(q);
+          return { claude: all.claude.filter(hit), tmux: all.tmux.filter(hit), tmuxInstalled: true, mirror: !!window.__mirror };
+        }
+        case 'mirror': window.__mirror = m.on; return m.on;
+        case 'preview': {
+          await new Promise(r => setTimeout(r, 30));
+          return m.kind === 'claude' ? '› make a hello world script\n\n✻ Done: hello.py prints Hello, world.' : 'web on main ❯ claude\n✻ Welcome back!\n> fix the login bug';
+        }
+        case 'openSession': {
+          sessions[m.sid] ??= mk();
+          const t = sessions[m.sid];
+          const id = 'o' + t.tabs.length;
+          if (!window.__attachedOnce?.[m.sid]) t.tabs = []; // a brand-new block holds only the session's tab
+          t.tabs.push({ id, title: m.name, named: true, running: false, cwd: m.cwd });
+          t.logs[id] = '';
+          t.active = id;
+          fire(info(m.sid));
+          return id;
+        }
         case 'folders': return { default: '/Users/me/Desktop/Claude outline', home: '/Users/me', recent: ['/Users/me/code/web', '/Users/me'] };
         case 'cd': case 'chooseFolder': {
           const path = m.op === 'cd' ? m.path : '/Users/me/picked';
@@ -95,6 +124,36 @@ let savedRaw;
   await page.keyboard.type('/term');
   const items = await page.$$eval('.popup .pop-item', b => b.map(x => x.textContent));
   check('/ menu offers Terminal', items.some(t => t.includes('Terminal')), JSON.stringify(items));
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.sess .sess-row');
+  await page.waitForFunction(() => document.querySelectorAll('.sess .sess-row').length === 4);
+  const rows = await page.$$eval('.sess .sess-row', b => b.map(x => x.textContent.replace(/\s+/g, ' ').trim()));
+  check('picker offers a new terminal first, then terminals and Claude sessions', rows[0].includes('New terminal') && rows[1].includes('vscode-k3p9') && rows[2].includes('read status.md') && rows[2].includes('e3e0d38a'), JSON.stringify(rows));
+  check('a mirrored terminal shows its app, program and folder', rows[1].includes('VS Code') && rows[1].includes('claude · web'), rows[1]);
+  const help = await page.$$eval('.sess .sess-cmd', r => r.map(x => x.textContent));
+  check('picker shows the commands for finding session IDs', help.length === 2 && help[0].includes('echo $OUTLINE_SESSION') && help[1].includes('~/.claude/projects'), JSON.stringify(help));
+  check('each command has a Copy button', (await page.$$('.sess .sess-cmd .sess-copy')).length === 2);
+
+  // hover preview
+  await page.hover('.sess .sess-row[data-i="1"]');
+  await page.waitForSelector('.sess-preview:not([hidden])');
+  check('hovering a terminal previews its screen', (await page.textContent('.sess-preview pre')).includes('fix the login bug') && (await page.textContent('.sess-preview-head')).includes('VS Code'));
+  await page.hover('.sess .sess-row[data-i="2"]');
+  await page.waitForFunction(() => document.querySelector('.sess-preview-head').textContent.startsWith('Claude'));
+  check('hovering a Claude session previews its last messages', (await page.textContent('.sess-preview pre')).includes('hello.py'));
+  await page.hover('.sess .sess-row[data-i="0"]');
+  await page.waitForSelector('.sess-preview', { state: 'hidden' });
+  check('no preview for “New terminal”', true);
+
+  // mirror switch
+  check('mirror switch starts off', (await page.getAttribute('.sess-toggle', 'aria-checked')) === 'false');
+  await page.click('.sess-toggle');
+  await page.waitForFunction(() => document.querySelector('.sess-toggle').getAttribute('aria-checked') === 'true');
+  check('switch turns mirroring on', (await calls(page, 'mirror'))[0]?.on === true && (await page.textContent('.sess-mirror-note')).includes('every new terminal'));
+  await page.click('.sess-toggle');
+  await page.waitForFunction(() => document.querySelector('.sess-toggle').getAttribute('aria-checked') === 'false');
+  check('and off again', (await calls(page, 'mirror'))[1]?.on === false);
+  await page.click('.sess input');
   await page.keyboard.press('Enter');
   await page.waitForSelector(`${PM} .term .xterm-rows`);
   await page.waitForFunction(() => document.querySelector('.term .xterm-rows')?.textContent.includes('hello from a'));
@@ -156,6 +215,20 @@ let savedRaw;
   await page.waitForFunction(() => document.querySelector('.term .term-tab[data-id=a]').textContent.includes('api server'));
   check('double-click renames a tab', true);
 
+  // opening a Claude session in this block from the header's search
+  const opensBefore = (await calls(page, 'openSession')).length;
+  await page.click('.term [data-act=sessions]');
+  await page.waitForSelector('.sess .sess-row');
+  await page.keyboard.type('6990bc66');
+  await page.waitForFunction(() => document.querySelectorAll('.sess .sess-row').length === 1);
+  check('searching by ID finds the session', (await page.textContent('.sess .sess-row')).includes('hello world'));
+  await page.keyboard.press('Enter');
+  const op = (await calls(page, 'openSession'))[opensBefore];
+  check('opens it as a tab of this terminal', op?.sid === sid && op.kind === 'claude' && op.id === '6990bc66-315f-4656-8546-99a2429969c6' && op.cwd === '/Users/me/Desktop/Claude outline', JSON.stringify(op));
+  await page.waitForFunction(() => [...document.querySelectorAll('.term .term-tab')].some(t => t.textContent.includes('hello world')));
+  check('the tab is named after the session', true);
+  await page.click('.term .term-tab[data-id=a] .term-tab-title');
+
   // its own window
   await page.click('.term [data-act=expand]');
   const exp = (await calls(page, 'expand'))[0];
@@ -175,6 +248,32 @@ let savedRaw;
   check('note stores the terminal block with its session id', node?.attrs.sid === sid, JSON.stringify(node));
   savedRaw = JSON.stringify(doc);
   check('no errors (block)', !errors.length, errors.join(' | '));
+  await ctx.close();
+}
+
+/* ---------- 1b. a new block opened straight on a session ---------- */
+{
+  const { ctx, page, errors } = await open('index.html');
+  await page.waitForSelector('.ProseMirror');
+  await page.click('#newNote');
+  await page.keyboard.type('Live');
+  await page.keyboard.press('Enter');
+  await page.click('.pane.focused .toolbar [data-cmd=terminal]');
+  await page.waitForFunction(() => document.querySelectorAll('.sess .sess-row').length === 4);
+  await page.keyboard.type('k3p9');
+  await page.waitForFunction(() => document.querySelectorAll('.sess .sess-row').length === 1);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`${PM} .term .term-tab`);
+  const op = (await calls(page, 'openSession'))[0];
+  check('toolbar → picker → mirrored terminal opens before the block is added', op?.kind === 'tmux' && op.id === 'vscode-k3p9' && op.socket === 'outline' && op.name === 'vscode-k3p9', JSON.stringify(op));
+  const node = (await lastDoc(page).catch(() => null)) && JSON.parse(await page.evaluate(() => window.__flush())).items.find(i => i.title === 'Live').doc.content.find(n => n.type === 'terminal');
+  check('the block shows that session', node?.attrs.sid === op.sid, JSON.stringify(node));
+  check('its only tab is the session', (await page.$$eval(`${PM} .term .term-tab`, t => t.map(x => x.textContent.trim()))).join() === 'vscode-k3p9');
+  await page.click('.pane.focused .toolbar [data-cmd=terminal]');
+  await page.waitForSelector('.sess');
+  await page.keyboard.press('Escape');
+  check('Esc closes the picker without adding anything', !(await page.$('.sess')) && (await page.$$(`${PM} .term`)).length === 1);
+  check('no errors (sessions)', !errors.length, errors.join(' | '));
   await ctx.close();
 }
 

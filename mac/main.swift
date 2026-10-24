@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
 
     // OUTLINE_SELFTEST=<file>: once the page has loaded, send one request through the Apple Notes
     // bridge (the backup action, which doesn't touch Notes), run a command in a real terminal, open
-    // its window, save and show a picture, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
+    // its window, list sessions and open a throwaway tmux one, save and show a picture, write the results to <file>, and quit. OUTLINE_SELFTEST_CLAUDE also starts the Claude CLI in it.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let out = env["OUTLINE_RESIZETEST"], webView === self.webView { resizeTest(out); return }
         guard let out = env["OUTLINE_SELFTEST"], webView === self.webView else { return }
@@ -258,7 +258,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             text = await t.postMessage({ op: 'text', sid, tab: s.tab });
           }
           const info = await t.postMessage({ op: 'attach', sid });
+          // sessions: the real Claude Code list, a search by ID, and a throwaway tmux session opened in a tab
+          const wait = ms => new Promise(r => setTimeout(r, ms));
+          const found = await t.postMessage({ op: 'sessions', query: '' });
+          let sessions = `${found.claude.length} claude`;
+          if (found.claude[0]) {
+            const byId = await t.postMessage({ op: 'sessions', query: found.claude[0].id.slice(0, 8) });
+            sessions += byId.claude.some(c => c.id === found.claude[0].id) ? ', search ok' : ', search FAIL';
+          }
+          if (found.tmuxInstalled) {
+            await t.postMessage({ op: 'input', sid, tab: s.tab, data: 'tmux new -d -s outline-selftest\\r' });
+            let listed = false;
+            for (let i = 0; i < 25 && !listed; i++) { await wait(200); listed = (await t.postMessage({ op: 'sessions', query: 'outline-selftest' })).tmux.length === 1; }
+            const tab = await t.postMessage({ op: 'openSession', sid, kind: 'tmux', id: 'outline-selftest', name: 'tmux: outline-selftest' });
+            await t.postMessage({ op: 'start', sid, tab, cols: 80, rows: 24 });
+            // attached = tmux's status bar, which shows the session's name, is on the tab's screen
+            let running = false;
+            for (let i = 0; i < 25 && !running; i++) { await wait(200); running = /outline-selftest/.test(await t.postMessage({ op: 'text', sid, tab })); }
+            await t.postMessage({ op: 'closeTab', sid, tab });
+            await t.postMessage({ op: 'input', sid, tab: s.tab, data: 'tmux kill-session -t outline-selftest\\r' });
+            sessions += `, tmux ${listed ? 'listed' : 'NOT listed'} + ${running ? 'attached' : 'NOT attached'}`;
+            await wait(500);
+          }
           let claude = '';
+          let mirrorState = '';
+          // OUTLINE_SELFTEST_MIRROR=<session>: find a mirrored terminal, preview it, attach and type into it
+          const target = \(env["OUTLINE_SELFTEST_MIRROR"].map { "'\($0)'" } ?? "null");
+          if (target) {
+            const hit = (await t.postMessage({ op: 'sessions', query: target })).tmux.find(r => r.id === target);
+            const peek = hit ? await t.postMessage({ op: 'preview', kind: 'tmux', id: target, socket: hit.socket }) : '';
+            const tab = await t.postMessage({ op: 'openSession', sid, kind: 'tmux', id: target, socket: 'outline', name: target });
+            await t.postMessage({ op: 'start', sid, tab, cols: 100, rows: 30 });
+            await wait(1500);
+            await t.postMessage({ op: 'input', sid, tab, data: 'echo from-outline-$((6*7))\\r' });
+            await wait(1500);
+            const seen = await t.postMessage({ op: 'text', sid, tab });
+            await t.postMessage({ op: 'closeTab', sid, tab });
+            mirrorState += ` found=${hit ? hit.app + '/' + (hit.program || 'shell') + '@' + hit.cwd : 'no'} preview=${/hello-from-terminal/.test(peek) ? 'ok' : 'FAIL'} typed=${/^from-outline-42/m.test(seen) ? 'ok' : 'FAIL'}`;
+          }
           if (\(env["OUTLINE_SELFTEST_CLAUDE"] != nil)) {
             await t.postMessage({ op: 'claude', sid, tab: s.tab });
             let title = '';
@@ -278,8 +315,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
           const src = await window.webkit.messageHandlers.images.postMessage({ op: 'save', type: 'image/png', b64: png });
           const shown = await new Promise(ok => { const i = new Image(); i.onload = () => ok(i.naturalWidth === 1); i.onerror = () => ok(false); i.src = src; });
           return backup + ' term=' + (/^outline-42/m.test(text) ? 'ok' : 'fail:' + JSON.stringify(text.slice(-300)))
-            + ' window=' + (viewers >= 2 ? 'ok' : 'fail') + ' folder=' + info.tabs[0].cwd + claude
-            + ' image=' + (shown ? 'ok' : 'fail:' + src);
+            + ' window=' + (viewers >= 2 ? 'ok' : 'fail') + ' folder=' + info.tabs[0].cwd + claude + ' sessions=' + sessions
+            + ' image=' + (shown ? 'ok' : 'fail:' + src) + mirrorState;
         } catch (e) { return 'failed: ' + e.message; }
         """
         webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
